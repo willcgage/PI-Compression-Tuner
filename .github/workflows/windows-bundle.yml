@@ -48,6 +48,7 @@ jobs:
           $out
           if ($LASTEXITCODE -ne 1) { throw "expected exit code 1, got $LASTEXITCODE" }
           if ($out -notmatch "PI Web API: failed \(ConnectionError" -or $out -notmatch "AF SDK: failed") { throw "missing per-source report" }
+          exit 0   # pict pi check is meant to exit 1 here
 
       - name: UI starts and answers
         shell: pwsh
