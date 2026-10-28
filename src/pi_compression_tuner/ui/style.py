@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 
+from pi_compression_tuner.present import attrs_table, notes, outcome, profile  # noqa: F401  (HTML shared with the report)
 from pi_compression_tuner.tune import Classification
 
 FONT = '"IBM Plex Sans", "Segoe UI", system-ui, sans-serif'
@@ -181,45 +182,3 @@ def plot_layout(fig, height: int, legend_y: float = 1.02, **kw):
 
 def finding(text_html: str, color: str) -> str:
     return f'<div class="pct-finding" style="border-left-color:{color}">{text_html}</div>'
-
-
-def _bar(label: str, frac: float, color: str, tick: float | None = None) -> str:
-    frac = min(max(frac, 0.0), 1.0)
-    t = f'<span class="tick" style="left:{100 * min(max(tick, 0), 1):.1f}%"></span>' if tick is not None else ""
-    return (f'<span>{esc(label)}</span><span class="track"><span class="fill" '
-            f'style="width:{max(100 * frac, 1.5):.1f}%;background:{color}"></span>{t}</span>')
-
-
-def outcome(cards: list[dict]) -> str:
-    """Cards with a headline value, a delta badge, a sub-line and paired now/proposed bars.
-
-    Each card: label, value, sub (HTML), optional delta=(text, 'good'|'warn'), optional
-    bars=[(label, fraction, color)] and tick (fraction).
-    """
-    out = []
-    for c in cards:
-        d = f'<span class="d {c["delta"][1]}">{esc(c["delta"][0])}</span>' if c.get("delta") else ""
-        bars = "".join(_bar(l, f, col, c.get("tick")) for l, f, col in c.get("bars", []))
-        bars = f'<div class="pct-bars">{bars}</div>' if bars else ""
-        out.append(f'<div class="pct-oc"><div class="l">{esc(c["label"])}</div><div class="row">'
-                   f'<span class="v">{esc(c["value"])}</span>{d}</div><div class="s">{c.get("sub", "")}</div>{bars}</div>')
-    return '<div class="pct-outcome">' + "".join(out) + "</div>"
-
-
-def attrs_table(rows: list[tuple], proposed: bool) -> str:
-    """Point attributes, now against proposed. Rows: (name, now, new, changed, is_sub)."""
-    head = "<tr><th>Attribute</th><th>Now</th>" + ("<th>Proposed</th>" if proposed else "") + "</tr>"
-    body = []
-    for name, now, new, changed, sub in rows:
-        cls = "chg" if changed else ("sub" if sub else "")
-        newcell = (f'<td class="{"new" if changed else "same"}">{esc(new)}</td>' if proposed else "")
-        body.append(f'<tr class="{cls}"><td>{esc(name)}</td><td>{esc(now)}</td>{newcell}</tr>')
-    return f'<table class="pct-attrs">{head}{"".join(body)}</table>'
-
-
-def profile(items: list[tuple[str, str]]) -> str:
-    return '<dl class="pct-profile">' + "".join(f"<dt>{esc(k)}</dt><dd>{esc(v)}</dd>" for k, v in items) + "</dl>"
-
-
-def notes(items: list[str]) -> str:
-    return '<ul class="pct-notes">' + "".join(f"<li>{esc(n)}</li>" for n in items) + "</ul>" if items else ""

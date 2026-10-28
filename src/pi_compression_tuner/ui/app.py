@@ -21,6 +21,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from pi_compression_tuner import present
 from pi_compression_tuner.demo import demo_data
 from pi_compression_tuner.export import pibuilder_frame, results_frame
 from pi_compression_tuner.metrics import reconstruct
@@ -285,68 +286,6 @@ with tab_overview:
 
 # --- Point detail ---------------------------------------------------------
 
-def _num(x: float) -> str:
-    return f"{x:.4g}"
-
-
-def _secs(x: float) -> str:
-    for unit, n in (("h", 3600), ("min", 60)):
-        if x >= n and x % n == 0:
-            return f"{x / n:g} {unit}"
-    return f"{x:g} s"
-
-
-def _attr_rows(now: PointConfig, new: PointConfig | None, raw_mode: bool):
-    rows = []
-
-    def add(name, a, b, fmt=_num, sub=False):
-        changed = new is not None and not np.isclose(float(a), float(b))
-        rows.append((name, fmt(a), fmt(b) if new is not None else "", changed, sub))
-
-    nw = new or now
-    add("ExcDev", now.excdev, nw.excdev)
-    add("ExcMin", now.excmin, nw.excmin, _secs)
-    add("ExcMax", now.excmax, nw.excmax, _secs)
-    add("CompDev", now.compdev, nw.compdev)
-    add("CompDev % span", now.compdevpercent, nw.compdevpercent, lambda x: f"{x:.3g}%", sub=True)
-    add("CompMin", now.compmin, nw.compmin, _secs)
-    add("CompMax", now.compmax, nw.compmax, _secs)
-    add("Compressing", int(now.compressing), int(nw.compressing), lambda x: "On" if x else "Off")
-    add("Zero", now.zero, nw.zero, sub=True)
-    add("Span", now.span, nw.span, sub=True)
-    add("Step", int(now.step), int(nw.step), lambda x: "Yes" if x else "No", sub=True)
-    return rows
-
-
-def _finding(r, prop, target: float, adopted: bool) -> str:
-    c, cur = r.classification, r.current
-    if cur is None:
-        return f"<b>{style.esc(c.value)}.</b> {style.esc(r.notes[0] if r.notes else '')} Nothing to tune for this point."
-    now = f"{_fmt_n(cur.events_per_day)} events a day"
-    if prop is not None:
-        cut = 100 * (1 - prop.events_per_day / max(cur.events_per_day, 1e-9))
-        how = (f"CompDev <b>{_num(prop.config.compdev)}</b> keeps {prop.score.retention:.1%} of the signal's movement "
-               f"with {_fmt_n(prop.events_per_day)} events a day")
-        pct = f"{abs(cut):.1f}" if abs(cut) >= 99 else f"{abs(cut):.0f}"
-        how += f", {pct}% fewer." if cut > 0 else f", {pct}% more."
-    lead = {
-        Classification.STORING_NOISE: f"<b>Storing noise.</b> The archive keeps {now}, far more than the signal needs. ",
-        Classification.LOSING_DETAIL: f"<b>Losing detail.</b> Today the archive keeps {cur.score.retention:.1%} of the "
-                                      f"signal's movement, below the {target:.1%} target. ",
-        Classification.ON_TARGET: f"<b>On target.</b> Current settings keep {cur.score.retention:.1%} of the signal's "
-                                  f"movement with {now}. No change is proposed.",
-        Classification.LITTLE_TO_GAIN: "<b>Little to gain.</b> ",
-        Classification.RANGE_MISMATCH: "<b>Range mismatch.</b> Check Zero and Span before changing compression. ",
-    }.get(c, f"<b>{style.esc(c.value)}.</b> ")
-    if c == Classification.ON_TARGET and not adopted:
-        return lead
-    if c == Classification.LITTLE_TO_GAIN:
-        lead += style.esc(r.notes[0]) + " " if r.notes else ""
-    if prop is None:
-        return lead + "Not exported by default; review the trend before changing anything."
-    return lead + ("The adopted probe value: " if adopted else "") + how
-
-
 with tab_point:
     tags = list(by_tag)
 
@@ -380,37 +319,12 @@ with tab_point:
             ss.table_v += 1
 
         h2.toggle("Include in PI Builder sheet", value=default_on, key=f"exp_{tag}", on_change=_toggle)
-    st.markdown(style.finding(_finding(r, prop, run_opts.target, adopted), VERDICT_COLOR[r.classification]),
+    st.markdown(style.finding(present.finding(r, run_opts.target, adopted), VERDICT_COLOR[r.classification]),
                 unsafe_allow_html=True)
 
     if r.current is not None:
-        cur = r.current
-        new = prop or cur
-        cards = []
-        hi = np.log10(max(cur.events_per_day, new.events_per_day, 10) * 1.2)
-        frac = lambda x: np.log10(max(x, 1)) / hi  # noqa: E731
-        cut = 100 * (new.events_per_day - cur.events_per_day) / max(cur.events_per_day, 1e-9)
-        cards.append(dict(label="Archive events per day", value=_fmt_n(new.events_per_day),
-                          delta=(f"{cut:+.1f}%", "good" if cut <= 0 else "warn") if prop else None,
-                          sub=f"from {_fmt_n(cur.events_per_day)} today" if prop else "unchanged",
-                          bars=[("Now", frac(cur.events_per_day), INK["now"])]
-                          + ([("Proposed", frac(new.events_per_day), INK["proposal"])] if prop else [])))
-        ok = new.score.retention >= run_opts.target
-        cards.append(dict(label="Retention", value=f"{new.score.retention:.1%}",
-                          delta=("meets target", "good") if ok else ("below target", "warn"),
-                          sub=(f"from {cur.score.retention:.1%} · " if prop else "") + f"target {run_opts.target:.1%}",
-                          bars=[("Now", cur.score.retention, INK["now"])]
-                          + ([("Proposed", new.score.retention, INK["proposal"])] if prop else []),
-                          tick=run_opts.target))
-        span_txt = f" · {100 * new.score.max_error / cfg_now.span:.2g}% of span" if cfg_now.span > 0 else ""
-        emax = max(cur.score.max_error, new.score.max_error, 1e-12) * 1.15
-        cards.append(dict(label="Largest error", value=f"{new.score.max_error:.3g}",
-                          sub=f"{new.score.max_error / r.noise:.1f}× noise σ{span_txt}" if r.noise else span_txt,
-                          bars=[("Now", cur.score.max_error / emax, INK["now"])]
-                          + ([("Proposed", new.score.max_error / emax, INK["proposal"])] if prop else [])))
-        yearly = new.events_per_day * 365
-        cards.append(dict(label="Archive events per year", value=f"{yearly:,.0f}" if yearly < 1e6 else f"{yearly / 1e6:.1f} M",
-                          sub=f"from {cur.events_per_day * 365:,.0f}" if prop else "at current settings"))
+        new = prop or r.current
+        cards = present.outcome_cards(r, run_opts.target, cfg_now.span, {"now": INK["now"], "proposal": INK["proposal"]})
         st.markdown(style.outcome(cards), unsafe_allow_html=True)
 
     trend_box = st.container()
@@ -418,21 +332,13 @@ with tab_point:
     a1, a2 = st.columns([3, 2], gap="large")
     with a1:
         st.markdown(style.section("Settings"), unsafe_allow_html=True)
-        st.markdown(style.attrs_table(_attr_rows(cfg_now, prop.config if prop else None, run_opts.input_mode == "raw"),
+        st.markdown(style.attrs_table(present.attr_rows(cfg_now, prop.config if prop else None),
                                       proposed=prop is not None), unsafe_allow_html=True)
     with a2:
         st.markdown(style.section("Signal"), unsafe_allow_html=True)
-        dt = np.diff(s.t)
-        items = [("Input events", f"{len(s):,}"), ("Period", f"{days:.1f} days"),
-                 ("Typical interval", _secs(round(float(np.median(dt)), 1)) if len(dt) else "n/a"),
-                 ("Observed range", f"{s.v.min():.4g} to {s.v.max():.4g}" if len(s) else "n/a"),
-                 ("Noise σ", f"{r.noise:.3g}")]
-        if cfg_now.span > 0 and len(s):
-            items.append(("Range used", f"{100 * np.ptp(s.v) / cfg_now.span:.0f}% of span"))
-        if prop is not None and r.noise > 0:
-            items.append(("Proposed CompDev", f"{prop.config.compdev / r.noise:.1f}× noise σ"))
+        items = present.signal_profile(r, s, cfg_now)
         st.markdown(style.profile(items), unsafe_allow_html=True)
-        st.markdown(style.notes([n for n in r.notes if n not in _finding(r, prop, run_opts.target, adopted)]),
+        st.markdown(style.notes([n for n in r.notes if n not in present.finding(r, run_opts.target, adopted)]),
                     unsafe_allow_html=True)
 
     if r.current is not None:
@@ -595,7 +501,7 @@ with tab_export:
         st.download_button("Download results table", results_frame(results).to_csv(index=False, float_format="%.6g"),
                            "results.csv", "text/csv", use_container_width=True)
         with tempfile.TemporaryDirectory() as d:
-            write_report(results, ss.series, run_opts, Path(d) / "report.html")
+            write_report(results, ss.series, run_opts, Path(d) / "report.html", selected=selected)
             st.download_button("Download HTML report", (Path(d) / "report.html").read_bytes(), "report.html",
                                "text/html", use_container_width=True)
     with right:

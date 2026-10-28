@@ -109,7 +109,7 @@ pict analyze capture/data.csv --config capture/config.csv --mode snapshot --serv
 
 ## Outputs
 
-- `report.html`: a summary, a results table, and a trend overlay for each point (input, current, and recommended), zoomed on the hour with the largest error.
+- `report.html`: a summary, a table of every point linked to its own page, and one page per point in the same layout as the UI's Point detail tab: the finding, now-versus-proposed cards, the trend with a detail-lost strip and a zoom on the largest miss, the settings sheet and the signal profile. It works offline, follows the system's dark mode, and prints one point per page.
 - `results.csv`: current versus proposed settings, retention, maximum error, events per day, and notes.
 - `pibuilder.csv`: one row per changed point, in PI Builder format. Rows that are ready to export are pre-selected with `x`. Review it in Excel, then publish with PI Builder.
 
