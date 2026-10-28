@@ -38,6 +38,6 @@ def test_exports(tmp_path):
     n = write_pibuilder_csv(results, tmp_path / "b.csv", server="PISRV")
     r = pd.read_csv(tmp_path / "r.csv")
     b = pd.read_csv(tmp_path / "b.csv")
-    assert r.loc[0, "Classification"] == "Undercompressed"
+    assert r.loc[0, "Classification"] == "Storing noise"
     assert n == 1 and b.loc[0, "Name"] == "A" and b.loc[0, "Parent"] == "PISRV" and b.loc[0, "Selected(x)"] == "x"
     assert list(b.columns[:4]) == ["Selected(x)", "Parent", "Name", "ObjectType"]

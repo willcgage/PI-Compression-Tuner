@@ -15,13 +15,13 @@ from .simulate import simulate_archive
 from .tune import Classification, TuneOptions, TuneResult
 
 _CLASS_STYLE = {
-    Classification.GOOD: "good",
-    Classification.UNDERCOMPRESSED: "under",
-    Classification.OVERCOMPRESSED: "over",
-    Classification.HARD_TO_COMPRESS: "info",
-    Classification.ZERO_SPAN_ISSUE: "info",
-    Classification.FLATLINE: "info",
-    Classification.INSUFFICIENT_DATA: "info",
+    Classification.ON_TARGET: "good",
+    Classification.STORING_NOISE: "under",
+    Classification.LOSING_DETAIL: "over",
+    Classification.LITTLE_TO_GAIN: "info",
+    Classification.RANGE_MISMATCH: "info",
+    Classification.NOT_MOVING: "info",
+    Classification.TOO_FEW_EVENTS: "info",
 }
 
 _CSS = """
@@ -149,9 +149,9 @@ def _point_section(r: TuneResult, s: Series, opts: TuneOptions) -> str:
     zoom = [(*sel(s.t, s.v), "--raw"), (*sel(ct, cv), "--cur")]
     if rec_line is not None:
         zoom.append((*sel(*rec_line), "--rec"))
-    legend = ('<div class="legend"><span><i class="sw" style="background:var(--raw)"></i>Input signal</span>'
-              '<span><i class="sw" style="background:var(--cur)"></i>Current settings</span>'
-              + ('<span><i class="sw" style="background:var(--rec)"></i>Recommended</span>' if rec_line is not None else "")
+    legend = ('<div class="legend"><span><i class="sw" style="background:var(--raw)"></i>Input</span>'
+              '<span><i class="sw" style="background:var(--cur)"></i>Archive now</span>'
+              + ('<span><i class="sw" style="background:var(--rec)"></i>Archive with proposal</span>' if rec_line is not None else "")
               + "</div>")
     charts = (f'<div class="charts"><div>{_svg(lines_full, s.t[0], s.t[-1])}</div>'
               f'<div>{_svg(zoom, z0, z1, w=360)}</div></div>')
@@ -176,19 +176,19 @@ def write_report(results: list[TuneResult], series: dict[str, Series], opts: Tun
         rows.append(
             f'<tr><td>{html.escape(r.tag)}</td><td class="l"><span class="pill {_CLASS_STYLE[r.classification]}">'
             f'{r.classification.value}</span></td>'
-            f'<td>{_fmt(cur.config.compdev) if cur else "–"}</td><td>{_pct(cur.score.fidelity) if cur else "–"}</td>'
+            f'<td>{_fmt(cur.config.compdev) if cur else "–"}</td><td>{_pct(cur.score.retention) if cur else "–"}</td>'
             f'<td>{_count(cur.events_per_day) if cur else "–"}</td>'
             f'<td>{_fmt(rec.config.compdev) if rec else "–"}</td>'
             f'<td>{_fmt(rec.config.excdev) if rec and opts.input_mode == "raw" else "–"}</td>'
-            f'<td>{_pct(rec.score.fidelity) if rec else "–"}</td><td>{_count(rec.events_per_day) if rec else "–"}</td>'
-            f'<td>{"yes" if r.safe_to_bulk_apply else ""}</td></tr>')
-    table = ('<div class="wrap"><table><thead><tr><th>Tag</th><th class="l">Class</th><th>CompDev</th><th>Fidelity</th>'
-             '<th>Events/day</th><th>Rec. CompDev</th><th>Rec. ExcDev</th><th>Rec. fidelity</th><th>Rec. events/day</th>'
-             f'<th>Bulk apply</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+            f'<td>{_pct(rec.score.retention) if rec else "–"}</td><td>{_count(rec.events_per_day) if rec else "–"}</td>'
+            f'<td>{"yes" if r.ready_to_export else ""}</td></tr>')
+    table = ('<div class="wrap"><table><thead><tr><th>Tag</th><th class="l">Verdict</th><th>CompDev</th><th>Retention</th>'
+             '<th>Events/day</th><th>Proposed CompDev</th><th>Proposed ExcDev</th><th>Proposed retention</th><th>Proposed events/day</th>'
+             f'<th>Ready to export</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
     sections = "".join(_point_section(r, series.get(r.tag, Series([], [])), opts) for r in results)
     mode = ("raw interface values (exception and compression simulated)" if opts.input_mode == "raw"
             else "the snapshot stream (compression simulated, ExcDev left as configured)")
-    meta = (f"Generated {datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC. Target fidelity {opts.target:.0%}, "
+    meta = (f"Generated {datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC. Target retention {opts.target:.0%}, "
             f"scored per {opts.window_s / 3600:g} h window at the {opts.percentile:g}th percentile. Input: {mode}. "
             "Recommendations only: nothing has been written to PI.")
     doc = (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'

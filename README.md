@@ -11,23 +11,23 @@ This is the MVP: it **only makes recommendations**. Use it from the web UI (`pic
    - archived data for points whose compression is off or very tight (`pict pi fetch`);
    - or any CSV export.
 2. **Replay PI's data reduction** at candidate settings. The replay covers exception reporting (ExcDev, ExcMin, ExcMax, and the "previous value" rule) and swinging-door compression (CompDev, CompMin, CompMax). It then rebuilds the trend PI would draw, using linear interpolation, or held values for step points.
-3. **Score each candidate** for fidelity, maximum error, and archive events per day.
-4. **Recommend** the loosest CompDev that still meets the target fidelity and any error limit. The value is rounded to two significant figures, but only when the rounded value still meets the target.
-5. **Classify** each point:
+3. **Score each candidate** for retention, maximum error, and archive events per day.
+4. **Propose** the loosest CompDev that still meets the target retention (default 95%) and any error limit. The value is rounded to two significant figures, but only when the rounded value still meets the target.
+5. **Give each point a verdict:**
 
-| Class | Meaning | In bulk apply? |
+| Verdict | Meaning | Ready to export? |
 |---|---|---|
-| Undercompressed | Keeps at least twice as many events as the target needs | yes |
-| Overcompressed | Current settings miss the target or the error limit | yes |
-| Good | Within target; no change | n/a |
-| Hard to compress | No setting reaches the target, or reaching it keeps over half the events | no, review |
-| Zero/span issue | Span is zero or negative, or more than 1% of values fall outside Zero and Span | no, review |
-| Flatline | The value never changes | no, review |
-| Insufficient data | Fewer than 50 events | no |
+| Storing noise | The archive keeps at least twice as many events as the target needs | yes |
+| Losing detail | Current settings miss the target retention or the error limit | yes |
+| On target | Within target; no change | n/a |
+| Little to gain | No setting reaches the target, or reaching it keeps over half the events | no, review |
+| Range mismatch | Span is zero or negative, or more than 1% of values fall outside Zero and Span | no, review |
+| Not moving | The value never changes | no, review |
+| Too few events | Fewer than 50 events | no |
 
-## Fidelity
+## Retention
 
-Commercial tools don't publish their fidelity formulas, so this one is defined here. For the raw input `x`, the reconstructed archive `r`, the measured noise `σ` (robust MAD of first differences), and a noise band `c` (default 2):
+Retention is the share of the signal's movement, beyond its own noise, that the archive keeps. For the raw input `x`, the reconstructed archive `r`, the measured noise `σ` (robust MAD of first differences), and a noise band `c` (default 2):
 
 ```
 e'  = max(0, |x - r| - c·σ)                       error beyond the noise band
@@ -58,10 +58,16 @@ pict ui          # opens http://localhost:8501
    - **Demo data**: synthetic signals, no PI needed.
    - **CSV files**: for example a `pict pi record` capture.
    - **PI server**: reads archived values through the PI Web API, falling back to AF SDK.
-2. **Choose tuning settings and run.** Settings are the target fidelity, scoring window, error limits, and whether the data is the snapshot stream or raw interface values.
-3. **Review** the summary and the recommendations table. Tick **Export** for the rows you want selected in the PI Builder sheet. Safe rows are ticked by default.
-4. **Open a point** to see the input signal, the current archive, and the recommended archive on one zoomable trend. Try your own CompDev (and ExcDev, in raw mode) to see its fidelity, events per day, and largest error, then click **Use this** to put it in the export.
-5. **Download** the PI Builder sheet, the results table, or the HTML report.
+2. **Choose tuning settings and run.** Settings are the target retention, scoring window, error limits, and whether the data is the snapshot stream or raw interface values.
+3. **Overview tab:**
+   - A map plots every point by archive events per day against retention, with arrows showing where each proposal moves it.
+   - Below the map is the verdict table. Tick **Export** for the rows you want selected in the PI Builder sheet. Rows ready to export are ticked by default.
+4. **Workbench tab:**
+   - A trade-off curve shows what each CompDev costs in archive volume and buys in retention, with **Now**, **Proposal** and **Probe** marked.
+   - Set the probe to any CompDev (and ExcDev, in raw mode) to see its retention, events per day and largest error.
+   - The trend below adds a red strip showing where the probe's archive strays from the input beyond the noise band.
+   - Click **Adopt** to export the probe value instead of the proposal.
+5. **Export tab:** preview and download the PI Builder sheet, the results table, or the HTML report.
 
 Recording the snapshot stream takes hours to days, so it stays a command-line job (`pict pi record`). Load its output into the UI as CSV files.
 
@@ -101,8 +107,8 @@ pict analyze capture/data.csv --config capture/config.csv --mode snapshot --serv
 ## Outputs
 
 - `report.html`: a summary, a results table, and a trend overlay for each point (input, current, and recommended), zoomed on the hour with the largest error.
-- `results.csv`: current versus recommended settings, fidelity, maximum error, events per day, and notes.
-- `pibuilder.csv`: one row per changed point, in PI Builder format. Rows that are safe to bulk apply are pre-selected with `x`. Review it in Excel, then publish with PI Builder.
+- `results.csv`: current versus proposed settings, retention, maximum error, events per day, and notes.
+- `pibuilder.csv`: one row per changed point, in PI Builder format. Rows that are ready to export are pre-selected with `x`. Review it in Excel, then publish with PI Builder.
 
 ## Input formats
 

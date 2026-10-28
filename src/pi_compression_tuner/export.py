@@ -20,7 +20,7 @@ def results_frame(results: list[TuneResult]) -> pd.DataFrame:
         row = {
             "Tag": r.tag,
             "Classification": r.classification.value,
-            "SafeToBulkApply": r.safe_to_bulk_apply,
+            "ReadyToExport": r.ready_to_export,
             "Change": r.changes,
             "InputEvents": r.input_events,
             "Noise": r.noise,
@@ -30,7 +30,7 @@ def results_frame(results: list[TuneResult]) -> pd.DataFrame:
                 f"{prefix}ExcDev": ev.config.excdev if ev else None,
                 f"{prefix}CompDev": ev.config.compdev if ev else None,
                 f"{prefix}CompDevPercent": ev.config.compdevpercent if ev else None,
-                f"{prefix}Fidelity": ev.score.fidelity if ev else None,
+                f"{prefix}Retention": ev.score.retention if ev else None,
                 f"{prefix}MaxError": ev.score.max_error if ev else None,
                 f"{prefix}EventsPerDay": ev.events_per_day if ev else None,
             })
@@ -60,7 +60,7 @@ def pibuilder_frame(results: list[TuneResult], server: str = "", include_excdev:
         if not r.changes:
             continue
         cfg = r.recommended.config
-        pick = (r.tag in selected) if selected is not None else r.safe_to_bulk_apply
+        pick = (r.tag in selected) if selected is not None else r.ready_to_export
         row = {"Selected(x)": "x" if pick else "", "Parent": server, "Name": r.tag, "ObjectType": "PIPoint"}
         if include_excdev:
             row["ExcDev"] = cfg.excdev

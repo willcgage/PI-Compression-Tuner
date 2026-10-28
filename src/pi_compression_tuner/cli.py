@@ -38,7 +38,7 @@ def main():
               help="CSV of current point attributes (PI Builder column names). Missing points use PI defaults.")
 @click.option("--mode", type=click.Choice(["snapshot", "raw"]), default="snapshot", show_default=True,
               help="snapshot: data already passed exception. raw: every value the interface read.")
-@click.option("--target", type=float, default=0.97, show_default=True, help="Target fidelity, 0 to 1.")
+@click.option("--target", type=float, default=0.95, show_default=True, help="Target retention, 0 to 1.")
 @click.option("--window", default="1h", show_default=True, help="Scoring window, e.g. 15m, 1h.")
 @click.option("--percentile", type=float, default=10.0, show_default=True, help="Window percentile used as the headline score.")
 @click.option("--max-error", type=float, help="Largest allowed error, engineering units.")
@@ -209,7 +209,8 @@ def ui(port, host):
     app = Path(__file__).parent / "ui" / "app.py"
     raise SystemExit(subprocess.call([sys.executable, "-m", "streamlit", "run", str(app),
                                       "--server.port", str(port), "--server.address", host,
-                                      "--browser.gatherUsageStats", "false", "--client.toolbarMode", "minimal"]))
+                                      "--browser.gatherUsageStats", "false", "--client.toolbarMode", "minimal",
+                                      "--theme.primaryColor", "#13708a", "--theme.base", "light"]))
 
 
 if __name__ == "__main__":

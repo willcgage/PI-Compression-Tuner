@@ -8,7 +8,7 @@ from enum import Enum
 
 import numpy as np
 
-from .metrics import Score, estimate_noise, fidelity_score, reconstruct
+from .metrics import Score, estimate_noise, retention_score, reconstruct
 from .models import PointConfig, Series
 from .simulate import simulate_archive
 
@@ -16,13 +16,13 @@ SECONDS_PER_DAY = 86400.0
 
 
 class Classification(str, Enum):
-    GOOD = "Good"
-    UNDERCOMPRESSED = "Undercompressed"
-    OVERCOMPRESSED = "Overcompressed"
-    HARD_TO_COMPRESS = "Hard to compress"
-    ZERO_SPAN_ISSUE = "Zero/span issue"
-    FLATLINE = "Flatline"
-    INSUFFICIENT_DATA = "Insufficient data"
+    ON_TARGET = "On target"
+    STORING_NOISE = "Storing noise"
+    LOSING_DETAIL = "Losing detail"
+    LITTLE_TO_GAIN = "Little to gain"
+    RANGE_MISMATCH = "Range mismatch"
+    NOT_MOVING = "Not moving"
+    TOO_FEW_EVENTS = "Too few events"
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,7 @@ class TuneOptions:
         simulated and ExcDev is recommended as ``excdev_ratio`` x CompDev.
     """
 
-    target: float = 0.97
+    target: float = 0.95
     input_mode: str = "snapshot"
     window_s: float = 3600.0
     percentile: float = 10.0
@@ -75,7 +75,7 @@ class TuneResult:
     recommended: Evaluation | None
     noise: float
     input_events: int
-    safe_to_bulk_apply: bool = False
+    ready_to_export: bool = False
     notes: list = field(default_factory=list)
 
     @property
@@ -114,7 +114,7 @@ class _Evaluator:
         sim = simulate_archive(s, config, apply_exception=self.opts.input_mode == "raw")
         vis = sim.visible()
         recon = reconstruct(s.t[vis], s.v[vis], s.t, step=self.step)
-        score = fidelity_score(s, recon, self.noise, self.opts.window_s, self.opts.percentile, self.opts.noise_band)
+        score = retention_score(s, recon, self.noise, self.opts.window_s, self.opts.percentile, self.opts.noise_band)
         n_arch = len(sim.archived)
         return Evaluation(config, n_arch, n_arch / self.days, n_arch / max(len(s), 1), score)
 
@@ -125,6 +125,27 @@ def evaluate_config(series: Series, config: PointConfig, opts: TuneOptions = Tun
     if noise is None:
         noise = estimate_noise(series.v)
     return _Evaluator(series, opts, noise, config.step)(config)
+
+
+def tradeoff_curve(series: Series, current: PointConfig, opts: TuneOptions = TuneOptions(), noise: float | None = None,
+                   points: int = 18) -> list[Evaluation]:
+    """Retention and archive volume across a log-spaced sweep of CompDev, for plotting the trade-off.
+
+    The sweep runs from a quarter of the noise to 40 times it (or to 5% of span, if larger),
+    with ExcDev handled as in :func:`tune_point`.
+    """
+    if noise is None:
+        noise = estimate_noise(series.v)
+    if noise <= 0 or len(series) < 2:
+        return []
+    hi = max(40 * noise, 0.05 * current.span if current.span > 0 else 0)
+    lo = max(0.25 * noise, current.excdev if opts.input_mode == "snapshot" else 0)
+    evaluate = _Evaluator(series, opts, noise, current.step)
+    out = []
+    for c in np.geomspace(max(lo, 1e-12), max(hi, lo * 1.01), points):
+        excdev = opts.excdev_ratio * c if opts.input_mode == "raw" else current.excdev
+        out.append(evaluate(replace(current, excdev=excdev, compdev=float(c), compressing=True)))
+    return out
 
 
 def _error_limit(opts: TuneOptions, span: float) -> float:
@@ -143,10 +164,10 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
     notes: list[str] = []
 
     if n < opts.min_events:
-        return TuneResult(tag, Classification.INSUFFICIENT_DATA, None, None, noise, n,
+        return TuneResult(tag, Classification.TOO_FEW_EVENTS, None, None, noise, n,
                           notes=[f"Only {n} events in the window; at least {opts.min_events} are needed."])
     if np.ptp(series.v) == 0 or noise == 0:
-        return TuneResult(tag, Classification.FLATLINE, None, None, noise, n,
+        return TuneResult(tag, Classification.NOT_MOVING, None, None, noise, n,
                           notes=["The value never changes in this window. Check the instrument or interface."])
 
     evaluate = _Evaluator(series, opts, noise, current.step)
@@ -154,7 +175,7 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
     limit = _error_limit(opts, current.span)
 
     def feasible(ev: Evaluation) -> bool:
-        return ev.score.fidelity >= opts.target and ev.score.max_error <= limit
+        return ev.score.retention >= opts.target and ev.score.max_error <= limit
 
     # Candidate CompDev values: multiples of the measured noise, plus common span percentages.
     cands = {noise * m for m in opts.noise_multiples}
@@ -210,20 +231,20 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
         notes.append("Span is zero or negative, so percent settings are meaningless.")
 
     if recommended is None:
-        cls = Classification.HARD_TO_COMPRESS
-        notes.append(f"No tested setting reaches {opts.target:.0%} fidelity"
+        cls = Classification.LITTLE_TO_GAIN
+        notes.append(f"No tested setting reaches {opts.target:.0%} retention"
                      + ("" if math.isinf(limit) else f" within the {limit:g} error limit") + ".")
     elif zero_span_issue:
-        cls = Classification.ZERO_SPAN_ISSUE
+        cls = Classification.RANGE_MISMATCH
     elif recommended.archive_ratio > opts.hard_archive_ratio:
-        cls = Classification.HARD_TO_COMPRESS
+        cls = Classification.LITTLE_TO_GAIN
         notes.append(f"Meeting the target keeps {recommended.archive_ratio:.0%} of events, so compression gains little.")
     elif not feasible(current_eval):
-        cls = Classification.OVERCOMPRESSED
+        cls = Classification.LOSING_DETAIL
     elif current_eval.archived_events > opts.under_ratio * max(recommended.archived_events, 1):
-        cls = Classification.UNDERCOMPRESSED
+        cls = Classification.STORING_NOISE
     else:
-        cls = Classification.GOOD
+        cls = Classification.ON_TARGET
         recommended = current_eval
 
     if opts.input_mode == "snapshot":
@@ -233,5 +254,5 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
     if not current.compressing:
         notes.append("Compression is currently off for this point.")
 
-    safe = cls in (Classification.UNDERCOMPRESSED, Classification.OVERCOMPRESSED)
+    safe = cls in (Classification.STORING_NOISE, Classification.LOSING_DETAIL)
     return TuneResult(tag, cls, current_eval, recommended, noise, n, safe, notes)

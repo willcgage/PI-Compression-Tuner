@@ -1,7 +1,6 @@
-"""Reconstruction, noise estimation and the fidelity score.
+"""Reconstruction, noise estimation and the retention score.
 
-Fidelity is our own, published metric. Neither commercial tool publishes theirs.
-It is the share of the signal's variance that the archive keeps, ignoring
+Retention is the share of the signal's variance that the archive keeps, ignoring
 errors that fall inside the measured noise band, so that dropping noise does not
 count as losing information:
 
@@ -64,14 +63,14 @@ def estimate_noise(v: np.ndarray) -> float:
 
 @dataclass(frozen=True)
 class Score:
-    fidelity: float          # headline: low percentile of window scores
-    fidelity_overall: float  # whole-series score, for reference
+    retention: float         # headline: low percentile of window scores
+    retention_overall: float  # whole-series score, for reference
     max_error: float         # engineering units
     rms_error: float         # engineering units
     windows: int             # active (non-quiet) windows scored
 
 
-def fidelity_score(
+def retention_score(
     raw: Series,
     recon: np.ndarray,
     noise: float,
@@ -113,8 +112,8 @@ def fidelity_score(
                     scores.append(f)
     headline = min(float(np.percentile(scores, percentile)), overall) if scores else overall
     return Score(
-        fidelity=headline,
-        fidelity_overall=overall,
+        retention=headline,
+        retention_overall=overall,
         max_error=float(abs_e.max()) if len(abs_e) else 0.0,
         rms_error=float(np.sqrt(np.mean(e * e))) if len(e) else 0.0,
         windows=len(scores),

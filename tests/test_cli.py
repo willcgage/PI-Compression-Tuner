@@ -15,5 +15,5 @@ def test_demo_then_analyze(tmp_path):
     assert (out / "report.html").read_text().startswith("<!doctype html>")
     r = pd.read_csv(out / "results.csv")
     assert len(r) == 4
-    assert set(r["Classification"]) <= {"Good", "Undercompressed", "Overcompressed", "Hard to compress",
-                                         "Zero/span issue", "Flatline", "Insufficient data"}
+    from pi_compression_tuner import Classification
+    assert set(r["Classification"]) <= {c.value for c in Classification}
