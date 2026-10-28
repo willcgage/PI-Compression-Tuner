@@ -11,6 +11,9 @@ on:
       - ".github/workflows/windows-bundle.yml"
   workflow_dispatch:
 
+permissions:
+  contents: write   # to publish the tested zip as a pre-release
+
 jobs:
   bundle:
     runs-on: windows-latest
@@ -71,3 +74,17 @@ jobs:
             dist/*.sha256
           compression-level: 0
           retention-days: 30
+
+      # Each tested push replaces the pre-release for this version, so the
+      # Releases page always offers the latest tested zip for download.
+      - name: Publish as a pre-release
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zip = (Get-ChildItem dist\*.zip).FullName
+          $tag = "bundle-" + [IO.Path]::GetFileNameWithoutExtension($zip).Replace("PI-Compression-Tuner-", "")
+          gh release delete $tag --cleanup-tag --yes 2>$null
+          $notes = "Offline Windows bundle for site testing, built and tested from ${{ github.ref_name }} at ${{ github.sha }}. Unzip it and follow START-HERE.txt inside."
+          gh release create $tag $zip "$zip.sha256" --target ${{ github.sha }} --prerelease --title "Site test bundle $tag" --notes $notes

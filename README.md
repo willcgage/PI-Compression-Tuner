@@ -65,7 +65,7 @@ pip install uv build
 python packaging/build_windows_bundle.py   # writes dist/PI-Compression-Tuner-<version>-win64.zip
 ```
 
-It builds on Linux or Windows. The **Windows bundle** workflow builds it on each push, tests it on a clean Windows machine and keeps the zip as a run artifact. Unzip it on the target and follow `START-HERE.txt`: run the self-test, then `pict pi check`, then try real points.
+It builds on Linux or Windows. The **Windows bundle** workflow builds it on each push, tests it on a clean Windows machine, and publishes the tested zip as a pre-release (`bundle-<version>-win64`) on the Releases page. Unzip it on the target and follow `START-HERE.txt`: run the self-test, then `pict pi check`, then try real points.
 
 ## The UI
 
