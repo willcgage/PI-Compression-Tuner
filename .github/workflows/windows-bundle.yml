@@ -47,7 +47,7 @@ jobs:
           $out = & $pict pi check --server NOSUCHSERVER --url https://127.0.0.1:9/piwebapi 2>&1 | Out-String
           $out
           if ($LASTEXITCODE -ne 1) { throw "expected exit code 1, got $LASTEXITCODE" }
-          if ($out -notmatch "PI Web API: failed" -or $out -notmatch "AF SDK: failed") { throw "missing per-source report" }
+          if ($out -notmatch "PI Web API: failed \(ConnectionError" -or $out -notmatch "AF SDK: failed") { throw "missing per-source report" }
 
       - name: UI starts and answers
         shell: pwsh

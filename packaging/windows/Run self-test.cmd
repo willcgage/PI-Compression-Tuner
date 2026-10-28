@@ -9,10 +9,7 @@ echo [1/4] Version
 call "%~dp0pict.cmd" --version || set "FAILED=1"
 echo.
 echo [2/4] Components
-"%~dp0python\python.exe" -s -c "import numpy, pandas, requests, streamlit, plotly; print('  core and UI: OK')" || set "FAILED=1"
-"%~dp0python\python.exe" -s -c "import requests_negotiate_sspi; print('  Windows sign-in for the PI Web API: OK')" || set "FAILED=1"
-"%~dp0python\python.exe" -s -c "import clr, System; print('  pythonnet (.NET', System.Environment.Version, '): OK')" || set "FAILED=1"
-"%~dp0python\python.exe" -s -c "from pi_compression_tuner.sources.afsdk import load_afsdk; load_afsdk(); print('  AF SDK: OK')" || echo   AF SDK: not found on this machine. That is fine if you use the PI Web API.
+"%~dp0python\python.exe" -s "%~dp0check_components.py" || set "FAILED=1"
 echo.
 echo [3/4] Demo analysis (synthetic data, no PI)
 call "%~dp0pict.cmd" demo selftest\demo --days 1 || set "FAILED=1"

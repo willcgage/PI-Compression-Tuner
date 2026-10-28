@@ -42,8 +42,8 @@ class PIWebAPI:
             self.s.auth = _make_auth(auth)
 
     # -- low level -------------------------------------------------------
-    def _get(self, path: str, **params) -> dict:
-        r = self.s.get(f"{self.base}/{path.lstrip('/')}", params=params, timeout=self.timeout)
+    def _get(self, endpoint: str, /, **params) -> dict:
+        r = self.s.get(f"{self.base}/{endpoint.lstrip('/')}", params=params, timeout=self.timeout)
         r.raise_for_status()
         return r.json()
 
