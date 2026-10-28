@@ -17,13 +17,18 @@ dependencies = [
 
 [project.optional-dependencies]
 kerberos = ["requests-negotiate-sspi; sys_platform == 'win32'", "requests-kerberos; sys_platform != 'win32'"]
-dev = ["pytest>=7"]
+afsdk = ["pythonnet>=3.0; sys_platform == 'win32'"]
+ui = ["streamlit>=1.40", "plotly>=5.18"]
+dev = ["pytest>=7", "streamlit>=1.40", "plotly>=5.18"]
 
 [project.scripts]
 pict = "pi_compression_tuner.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+pi_compression_tuner = ["ui/*.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

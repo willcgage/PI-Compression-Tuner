@@ -2,13 +2,13 @@
 
 Recommends exception and compression settings for AVEVA PI Points, based on how each signal actually behaves.
 
-This is the MVP: it **only makes recommendations**. Nothing in it writes values or point attributes to PI. Approved changes go out through a PI Builder sheet that a person reviews and publishes.
+This is the MVP: it **only makes recommendations**. Use it from the web UI (`pict ui`) or the command line (`pict`). Nothing in it writes values or point attributes to PI. Approved changes go out through a PI Builder sheet that a person reviews and publishes.
 
 ## How it works
 
 1. **Get a signal** that has not yet been compressed:
-   - the snapshot stream, recorded read-only through the PI Web API (`pict piwebapi record`);
-   - archived data for points whose compression is off or very tight (`pict piwebapi fetch`);
+   - the snapshot stream, recorded read-only through the PI Web API or AF SDK (`pict pi record`);
+   - archived data for points whose compression is off or very tight (`pict pi fetch`);
    - or any CSV export.
 2. **Replay PI's data reduction** at candidate settings. The replay covers exception reporting (ExcDev, ExcMin, ExcMax, and the "previous value" rule) and swinging-door compression (CompDev, CompMin, CompMax). It then rebuilds the trend PI would draw, using linear interpolation, or held values for step points.
 3. **Score each candidate** for fidelity, maximum error, and archive events per day.
@@ -44,11 +44,28 @@ F   = min(10th percentile of F_w, whole-series F)  headline score
 ## Install
 
 ```bash
-pip install -e ".[dev]"            # add ,kerberos for Windows integrated auth to the PI Web API
-pytest
+pip install -e ".[ui,kerberos,afsdk]"   # ui: the web UI; kerberos: Windows sign-in to the PI Web API; afsdk: AF SDK fallback (Windows)
+pip install -e ".[dev]" && pytest        # development
 ```
 
-## Try it without PI
+## The UI
+
+```bash
+pict ui          # opens http://localhost:8501
+```
+
+1. **Load data** in the sidebar. Choose one of:
+   - **Demo data**: synthetic signals, no PI needed.
+   - **CSV files**: for example a `pict pi record` capture.
+   - **PI server**: reads archived values through the PI Web API, falling back to AF SDK.
+2. **Choose tuning settings and run.** Settings are the target fidelity, scoring window, error limits, and whether the data is the snapshot stream or raw interface values.
+3. **Review** the summary and the recommendations table. Tick **Export** for the rows you want selected in the PI Builder sheet. Safe rows are ticked by default.
+4. **Open a point** to see the input signal, the current archive, and the recommended archive on one zoomable trend. Try your own CompDev (and ExcDev, in raw mode) to see its fidelity, events per day, and largest error, then click **Use this** to put it in the export.
+5. **Download** the PI Builder sheet, the results table, or the HTML report.
+
+Recording the snapshot stream takes hours to days, so it stays a command-line job (`pict pi record`). Load its output into the UI as CSV files.
+
+## Try the command line without PI
 
 ```bash
 pict demo demo
@@ -56,21 +73,30 @@ pict analyze demo/data.csv --config demo/config.csv --mode raw --out demo/out
 # open demo/out/report.html
 ```
 
-## Use with PI Web API (read-only)
+## Connecting to PI (read-only)
+
+By default, every `pict pi` command (and the UI) tries the **PI Web API** first. If the Web API is unreachable, refuses the credentials, or can't find the server, it falls back to **AF SDK**, and says which source it used and why. To force one source, pass `--source webapi` or `--source afsdk`.
 
 ```bash
-# 1. Triage: rank points by archive events per day
-pict piwebapi triage --url https://pihost/piwebapi --server PISRV --filter "FIC*" --start "*-1d"
+# 1. Triage: rank points by archive events
+pict pi triage --server PISRV --url https://pihost/piwebapi --filter "FIC*" --start "*-1d"
 
 # 2. Record the snapshot stream for the candidates (no point settings are changed)
-pict piwebapi record --url https://pihost/piwebapi --server PISRV --filter "FIC*" --duration 2d --out capture
+pict pi record --server PISRV --url https://pihost/piwebapi --filter "FIC*" --duration 2d --out capture
 
-# 3. Analyse
+# 3. Analyse (or load capture/ into the UI)
 pict analyze capture/data.csv --config capture/config.csv --mode snapshot --server PISRV --out results
 ```
 
-- `--auth` takes `kerberos` (the default), `basic` (which reads `PI_WEBAPI_USER` and `PI_WEBAPI_PASSWORD` from the environment), or `anonymous`. Use `--ca-bundle` for an internal CA.
-- `record` uses PI Web API stream updates. It registers a marker per point, which creates a server-side subscription but changes no data or settings.
+- **PI Web API:**
+  - `--auth` takes `kerberos` (the default), `basic` (which reads `PI_WEBAPI_USER` and `PI_WEBAPI_PASSWORD` from the environment), or `anonymous`.
+  - Use `--ca-bundle` for an internal CA.
+  - `record` uses stream updates. It registers a marker per point, which creates a server-side subscription but changes no data or settings.
+- **AF SDK:**
+  - Needs Windows, PI AF Client, and `pythonnet`.
+  - The assembly is looked up in the standard `PIPC\AF\PublicAssemblies\4.0` folders, or in `--afsdk-dir` or `PI_AFSDK_DIR`.
+  - `record` uses a snapshot `PIDataPipe`.
+  - The server must be in the machine's known servers table.
 
 ## Outputs
 
@@ -93,11 +119,13 @@ pict analyze capture/data.csv --config capture/config.csv --mode snapshot --serv
 
 Treat the simulator as validated only after this test passes on real data from your site.
 
+## Not yet verified
+
+The PI Web API and AF SDK adapters are tested against fakes only. Run them against your servers, and add parity cases, before relying on them.
+
 ## Not in the MVP
 
 - Raw capture runs that temporarily lower ExcDev.
 - Writing settings to PI, with change history and undo.
-- An AF SDK adapter.
-- A web UI.
 
 The design notes are in the research page linked from the project.

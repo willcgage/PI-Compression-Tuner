@@ -2,7 +2,7 @@
 
 from .models import PointConfig, Series
 from .simulate import exception_filter, swinging_door, simulate_archive
-from .tune import TuneOptions, TuneResult, Classification, tune_point
+from .tune import TuneOptions, TuneResult, Classification, evaluate_config, tune_point
 
 __all__ = [
     "PointConfig",
@@ -14,6 +14,7 @@ __all__ = [
     "TuneResult",
     "Classification",
     "tune_point",
+    "evaluate_config",
 ]
 
 __version__ = "0.1.0"

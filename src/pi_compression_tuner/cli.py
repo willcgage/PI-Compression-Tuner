@@ -7,7 +7,6 @@ from dataclasses import asdict
 from pathlib import Path
 
 import click
-import numpy as np
 import pandas as pd
 
 from . import __version__
@@ -78,139 +77,139 @@ def analyze(data, config_path, mode, target, window, percentile, max_error, max_
 @click.option("--seed", type=int, default=1, show_default=True)
 def demo(out_dir, days, seed):
     """Write a synthetic data.csv and config.csv to try `pict analyze` without a PI server."""
-    rng = np.random.default_rng(seed)
-    t = np.arange(0, days * 86400, 5.0)
-    ts = pd.Timestamp("2026-01-01", tz="UTC") + pd.to_timedelta(t, unit="s")
-    sigs = {
-        "DEMO.TEMP.PV": (60 + 8 * np.sin(2 * np.pi * t / 86400) + rng.normal(0, 0.05, len(t)), PointConfig(compdev=0.05, span=200)),
-        "DEMO.FLOW.PV": (120 + np.cumsum(rng.normal(0, 0.4, len(t))) * 0.05 + rng.normal(0, 1.0, len(t)), PointConfig(compdev=0.2, span=300)),
-        "DEMO.PRESS.PV": (np.where((t // 7200) % 2 == 0, 10.0, 14.0) + rng.normal(0, 0.02, len(t)), PointConfig(compdev=2.0, span=25)),
-        "DEMO.LEVEL.PV": (50 + 20 * np.sin(2 * np.pi * t / 5400) + rng.normal(0, 0.3, len(t)), PointConfig(compdev=0.5, span=100, compressing=False)),
-    }
+    from .demo import demo_data
+    from .sources.ops import series_frame
+    series, configs = demo_data(days, seed)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    pd.concat([pd.DataFrame({"Tag": k, "Timestamp": ts, "Value": v}) for k, (v, _) in sigs.items()]) \
-        .to_csv(out / "data.csv", index=False, date_format="%Y-%m-%dT%H:%M:%SZ")
+    series_frame(series).to_csv(out / "data.csv", index=False, date_format="%Y-%m-%dT%H:%M:%SZ")
     pd.DataFrame([{"Name": k, **{a.capitalize(): (int(b) if isinstance(b, bool) else b) for a, b in asdict(c).items()}}
-                  for k, (_, c) in sigs.items()]).to_csv(out / "config.csv", index=False)
+                  for k, c in configs.items()]).to_csv(out / "config.csv", index=False)
     click.echo(f"Wrote {out / 'data.csv'} and {out / 'config.csv'}. Try: pict analyze {out / 'data.csv'} --config {out / 'config.csv'} --mode raw")
 
 
-# --- PI Web API (read-only) ---------------------------------------------
+# --- PI (read-only) ----------------------------------------------------
 
-def _client(url, auth, ca_bundle, insecure):
-    from .sources.piwebapi import PIWebAPI
+def _connect(server, source, url, auth, ca_bundle, insecure, afsdk_dir):
+    from .sources.connect import connect
     verify = False if insecure else (ca_bundle or True)
-    return PIWebAPI(url, auth=auth, verify=verify)
+    conn = connect(server, source=source, url=url, auth=auth, verify=verify, afsdk_dir=afsdk_dir)
+    click.echo(conn.note or f"Connected through {'the PI Web API' if conn.kind == 'webapi' else 'AF SDK'}.", err=True)
+    return conn.source
 
 
 def _pi_options(f):
-    f = click.option("--insecure", is_flag=True, help="Skip TLS certificate checks.")(f)
+    f = click.option("--afsdk-dir", type=click.Path(file_okay=False), help="Folder holding OSIsoft.AFSDK.dll, if not the default.")(f)
+    f = click.option("--insecure", is_flag=True, help="Skip TLS certificate checks (PI Web API).")(f)
     f = click.option("--ca-bundle", type=click.Path(exists=True, dir_okay=False), help="CA bundle for the PI Web API certificate.")(f)
     f = click.option("--auth", type=click.Choice(["kerberos", "basic", "anonymous"]), default="kerberos", show_default=True,
-                     help="basic reads PI_WEBAPI_USER and PI_WEBAPI_PASSWORD from the environment.")(f)
+                     help="PI Web API auth. basic reads PI_WEBAPI_USER and PI_WEBAPI_PASSWORD from the environment.")(f)
+    f = click.option("--url", help="PI Web API base URL, e.g. https://pivision/piwebapi")(f)
+    f = click.option("--source", type=click.Choice(["auto", "webapi", "afsdk"]), default="auto", show_default=True,
+                     help="auto tries the PI Web API, then falls back to AF SDK.")(f)
     f = click.option("--server", required=True, help="PI Data Archive name.")(f)
-    f = click.option("--url", required=True, help="PI Web API base URL, e.g. https://pivision/piwebapi")(f)
     return f
 
 
-def _refs(api, server, tags, name_filter, limit):
-    if tags:
-        return [api.point(server, t) for t in tags]
-    return api.find_points(server, name_filter, max_count=limit)
-
-
-def _write_configs(api, refs, path):
-    rows = []
-    for ref in refs:
-        a = api.attributes(ref)
-        rows.append({"Name": ref.name, **{k: a.get(k.lower()) for k in
-                     ("ExcDev", "ExcMin", "ExcMax", "CompDev", "CompMin", "CompMax", "Compressing", "Step", "Zero", "Span", "PointType")}})
-    pd.DataFrame(rows).to_csv(path, index=False)
-
-
-def _write_series(series, path):
-    frames = [pd.DataFrame({"Tag": name, "Timestamp": pd.to_datetime(s.t, unit="s", utc=True), "Value": s.v})
-              for name, s in series.items() if len(s)]
-    df = pd.concat(frames) if frames else pd.DataFrame(columns=["Tag", "Timestamp", "Value"])
-    df.to_csv(path, index=False, date_format="%Y-%m-%dT%H:%M:%S.%fZ")
+def _point_options(f):
+    f = click.option("--limit", type=int, default=100, show_default=True)(f)
+    f = click.option("--filter", "name_filter", default=None, help="Tag name filter, used when no --tag is given.")(f)
+    f = click.option("--tag", "tags", multiple=True, help="Tag name; repeat for several.")(f)
+    return f
 
 
 @main.group()
-def piwebapi():
-    """Read points, settings and data from the PI Web API. Read-only."""
+def pi():
+    """Read points, settings and data from PI (PI Web API, falling back to AF SDK). Read-only."""
 
 
-@piwebapi.command()
+@pi.command()
 @_pi_options
 @click.option("--filter", "name_filter", default="*", show_default=True, help="Tag name filter.")
 @click.option("--start", default="*-1d", show_default=True)
 @click.option("--end", default="*", show_default=True)
 @click.option("--limit", type=int, default=1000, show_default=True)
 @click.option("--out", "out_path", default="triage.csv", show_default=True)
-def triage(url, server, auth, ca_bundle, insecure, name_filter, start, end, limit, out_path):
-    """Rank points by archive events per day, the cheap first pass for finding noisy or empty points."""
-    api = _client(url, auth, ca_bundle, insecure)
-    refs = api.find_points(server, name_filter, max_count=limit)
+def triage(server, source, url, auth, ca_bundle, insecure, afsdk_dir, name_filter, start, end, limit, out_path):
+    """Rank points by archive events, the cheap first pass for finding noisy or empty points."""
+    src = _connect(server, source, url, auth, ca_bundle, insecure, afsdk_dir)
+    refs = src.find_points(server, name_filter, max_count=limit)
     rows = []
     with click.progressbar(refs, label="Counting", file=sys.stderr) as it:
         for ref in it:
-            a = api.attributes(ref)
-            rows.append({"Name": ref.name, "ArchiveEvents": api.event_count(ref, start, end),
-                         **{k: a.get(k.lower()) for k in ("CompDev", "CompDevPercent", "ExcDev", "Compressing", "Span", "PointType")}})
-    df = pd.DataFrame(rows).sort_values("ArchiveEvents", ascending=False)
+            a = src.attributes(ref)
+            rows.append({"Name": ref.name, "ArchiveEvents": src.event_count(ref, start, end),
+                         **{k: a.get(k.lower()) for k in ("CompDev", "ExcDev", "Compressing", "Span", "PointType")}})
+    df = pd.DataFrame(rows)
+    if len(df):
+        df = df.sort_values("ArchiveEvents", ascending=False)
     df.to_csv(out_path, index=False)
     click.echo(f"Wrote {out_path} ({len(df)} points). Points with the most events, and with none, are the first to review.")
 
 
-@piwebapi.command()
+@pi.command()
 @_pi_options
-@click.option("--tag", "tags", multiple=True, help="Tag name; repeat for several.")
-@click.option("--filter", "name_filter", default=None, help="Tag name filter, used when no --tag is given.")
-@click.option("--limit", type=int, default=100, show_default=True)
+@_point_options
 @click.option("--duration", default="1d", show_default=True, help="How long to record, e.g. 6h, 2d.")
 @click.option("--poll", default="10s", show_default=True)
 @click.option("--out", "out_dir", type=click.Path(file_okay=False), default="capture", show_default=True)
-def record(url, server, auth, ca_bundle, insecure, tags, name_filter, limit, duration, poll, out_dir):
+def record(server, source, url, auth, ca_bundle, insecure, afsdk_dir, tags, name_filter, limit, duration, poll, out_dir):
     """Record the snapshot stream (after exception, before compression) for later `pict analyze --mode snapshot`."""
-    if not tags and not name_filter:
-        raise click.UsageError("give --tag or --filter")
-    api = _client(url, auth, ca_bundle, insecure)
-    refs = _refs(api, server, tags, name_filter, limit)
+    from .sources.ops import configs_frame, series_frame
+    src = _connect(server, source, url, auth, ca_bundle, insecure, afsdk_dir)
+    refs = _resolve(src, server, tags, name_filter, limit)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    _write_configs(api, refs, out / "config.csv")
-    click.echo(f"Recording {len(refs)} points for {duration}. Leave this running; Ctrl+C stops early and keeps what was recorded.", err=True)
-    series = api.record_snapshots(refs, _duration(duration), _duration(poll),
+    configs_frame(src, refs).to_csv(out / "config.csv", index=False)
+    click.echo(f"Recording {len(refs)} points for {duration}. Ctrl+C stops early and keeps what was recorded.", err=True)
+    series = src.record_snapshots(refs, _duration(duration), _duration(poll),
                                   on_poll=lambda c: click.echo(f"\r  {sum(c.values())} events", nl=False, err=True))
-    _write_series(series, out / "data.csv")
+    series_frame(series).to_csv(out / "data.csv", index=False, date_format="%Y-%m-%dT%H:%M:%S.%fZ")
     click.echo(f"\nWrote {out / 'data.csv'} and {out / 'config.csv'}.")
 
 
-@piwebapi.command()
+@pi.command()
 @_pi_options
-@click.option("--tag", "tags", multiple=True, help="Tag name; repeat for several.")
-@click.option("--filter", "name_filter", default=None, help="Tag name filter, used when no --tag is given.")
-@click.option("--limit", type=int, default=100, show_default=True)
+@_point_options
 @click.option("--start", default="*-7d", show_default=True)
 @click.option("--end", default="*", show_default=True)
 @click.option("--out", "out_dir", type=click.Path(file_okay=False), default="fetch", show_default=True)
-def fetch(url, server, auth, ca_bundle, insecure, tags, name_filter, limit, start, end, out_dir):
+def fetch(server, source, url, auth, ca_bundle, insecure, afsdk_dir, tags, name_filter, limit, start, end, out_dir):
     """Download archived values and settings. Only useful for tuning where the archive is near-raw
     (compression off or very tight); otherwise use `record`."""
-    if not tags and not name_filter:
-        raise click.UsageError("give --tag or --filter")
-    api = _client(url, auth, ca_bundle, insecure)
-    refs = _refs(api, server, tags, name_filter, limit)
+    from .sources.ops import configs_frame, fetch_recorded, series_frame
+    src = _connect(server, source, url, auth, ca_bundle, insecure, afsdk_dir)
+    refs = _resolve(src, server, tags, name_filter, limit)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    _write_configs(api, refs, out / "config.csv")
-    series = {}
-    with click.progressbar(refs, label="Fetching", file=sys.stderr) as it:
-        for ref in it:
-            series[ref.name] = api.recorded(ref, start, end)
-    _write_series(series, out / "data.csv")
-    click.echo(f"Wrote {out / 'data.csv'} and {out / 'config.csv'}.")
+    configs_frame(src, refs).to_csv(out / "config.csv", index=False)
+    series = fetch_recorded(src, refs, start, end, progress=lambda i, n: click.echo(f"\r  {i}/{n} points", nl=False, err=True))
+    series_frame(series).to_csv(out / "data.csv", index=False, date_format="%Y-%m-%dT%H:%M:%S.%fZ")
+    click.echo(f"\nWrote {out / 'data.csv'} and {out / 'config.csv'}.")
+
+
+def _resolve(src, server, tags, name_filter, limit):
+    from .sources.ops import resolve_points
+    try:
+        return resolve_points(src, server, tags, name_filter, limit)
+    except ValueError as e:
+        raise click.UsageError(str(e))
+
+
+@main.command()
+@click.option("--port", type=int, default=8501, show_default=True)
+@click.option("--host", default="localhost", show_default=True, help="Use 0.0.0.0 to serve other machines.")
+def ui(port, host):
+    """Open the web UI in a browser."""
+    try:
+        import streamlit  # noqa: F401
+    except ImportError:
+        raise click.ClickException("The UI needs: pip install 'pi-compression-tuner[ui]'")
+    import subprocess
+    app = Path(__file__).parent / "ui" / "app.py"
+    raise SystemExit(subprocess.call([sys.executable, "-m", "streamlit", "run", str(app),
+                                      "--server.port", str(port), "--server.address", host,
+                                      "--browser.gatherUsageStats", "false", "--client.toolbarMode", "minimal"]))
 
 
 if __name__ == "__main__":

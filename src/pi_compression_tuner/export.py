@@ -47,18 +47,21 @@ def write_results_csv(results: list[TuneResult], path: str | Path) -> None:
     results_frame(results).to_csv(path, index=False, float_format="%.6g")
 
 
-def write_pibuilder_csv(results: list[TuneResult], path: str | Path, server: str = "", include_excdev: bool = False) -> int:
-    """Write a PI Builder sheet with one row per point whose recommendation changes its settings.
+def pibuilder_frame(results: list[TuneResult], server: str = "", include_excdev: bool = False,
+                    selected: set[str] | None = None) -> pd.DataFrame:
+    """PI Builder rows for every point whose recommendation changes its settings.
 
-    Rows that are safe to bulk apply are pre-selected with an ``x``. Other rows are
-    included unselected so they can be reviewed one at a time. Returns the row count.
+    A row is marked ``x`` (selected for publishing) when its tag is in ``selected``,
+    or, when ``selected`` is None, when it is safe to bulk apply. Unselected rows stay
+    in the sheet so they can be reviewed one at a time.
     """
     rows = []
     for r in results:
         if not r.changes:
             continue
         cfg = r.recommended.config
-        row = {"Selected(x)": "x" if r.safe_to_bulk_apply else "", "Parent": server, "Name": r.tag, "ObjectType": "PIPoint"}
+        pick = (r.tag in selected) if selected is not None else r.safe_to_bulk_apply
+        row = {"Selected(x)": "x" if pick else "", "Parent": server, "Name": r.tag, "ObjectType": "PIPoint"}
         if include_excdev:
             row["ExcDev"] = cfg.excdev
         row["CompDev"] = cfg.compdev
@@ -67,7 +70,14 @@ def write_pibuilder_csv(results: list[TuneResult], path: str | Path, server: str
         rows.append(row)
     cols = ["Selected(x)", "Parent", "Name", "ObjectType"] + (["ExcDev"] if include_excdev else []) + ["CompDev", "Compressing"]
     df = pd.DataFrame(rows, columns=cols)
-    if "Compressing" in df and df["Compressing"].isna().all():
+    if df["Compressing"].isna().all():
         df = df.drop(columns="Compressing")
+    return df
+
+
+def write_pibuilder_csv(results: list[TuneResult], path: str | Path, server: str = "", include_excdev: bool = False,
+                        selected: set[str] | None = None) -> int:
+    """Write :func:`pibuilder_frame` to ``path`` and return the row count."""
+    df = pibuilder_frame(results, server, include_excdev, selected)
     df.to_csv(path, index=False, float_format="%.6g")
     return len(df)

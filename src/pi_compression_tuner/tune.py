@@ -119,6 +119,14 @@ class _Evaluator:
         return Evaluation(config, n_arch, n_arch / self.days, n_arch / max(len(s), 1), score)
 
 
+def evaluate_config(series: Series, config: PointConfig, opts: TuneOptions = TuneOptions(),
+                    noise: float | None = None) -> Evaluation:
+    """Score one set of settings against a series, for what-if checks of custom values."""
+    if noise is None:
+        noise = estimate_noise(series.v)
+    return _Evaluator(series, opts, noise, config.step)(config)
+
+
 def _error_limit(opts: TuneOptions, span: float) -> float:
     limits = []
     if opts.max_error is not None:

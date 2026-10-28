@@ -69,7 +69,7 @@ def _pct(x):
     return "–" if x is None else f"{100 * x:.1f}%"
 
 
-def _envelope(t, v, buckets=800):
+def envelope(t, v, buckets=800):
     """Min/max per bucket so a long series draws quickly without hiding spikes."""
     if len(t) <= 2 * buckets:
         return t, v
@@ -129,12 +129,12 @@ def _point_section(r: TuneResult, s: Series, opts: TuneOptions) -> str:
         return s.t[vis], s.v[vis], reconstruct(s.t[vis], s.v[vis], s.t, cfg.step)
 
     ct, cv, crec = recon_of(r.current.config)
-    lines_full = [(*_envelope(s.t, s.v), "--raw"), (*_envelope(ct, cv), "--cur")]
+    lines_full = [(*envelope(s.t, s.v), "--raw"), (*envelope(ct, cv), "--cur")]
     rec_line = None
     if r.recommended is not None and r.changes:
         rt, rv, rrec = recon_of(r.recommended.config)
         rec_line = (rt, rv)
-        lines_full.append((*_envelope(rt, rv), "--rec"))
+        lines_full.append((*envelope(rt, rv), "--rec"))
         err = np.abs(s.v - rrec)
     else:
         err = np.abs(s.v - crec)

@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass
 from urllib.parse import quote
 
 import pandas as pd
 import requests
 
 from ..models import PointConfig, Series
+from .base import PointRef
 
 CONFIG_ATTRIBUTES = (
     "excdev", "excmin", "excmax", "compdev", "compmin", "compmax",
@@ -23,15 +23,8 @@ CONFIG_ATTRIBUTES = (
 )
 
 
-@dataclass(frozen=True)
-class PointRef:
-    name: str
-    web_id: str
-    path: str
-
-
 class PIWebAPI:
-    """Minimal PI Web API client.
+    """Minimal PI Web API client. ``PointRef.web_id`` holds the point's WebId.
 
     ``auth`` is ``"kerberos"`` (Windows integrated / Negotiate), ``"basic"`` (reads
     ``PI_WEBAPI_USER`` and ``PI_WEBAPI_PASSWORD`` from the environment) or ``"anonymous"``.
@@ -53,6 +46,10 @@ class PIWebAPI:
         r = self.s.get(f"{self.base}/{path.lstrip('/')}", params=params, timeout=self.timeout)
         r.raise_for_status()
         return r.json()
+
+    def check(self, server: str) -> None:
+        """Raise if the Web API or the Data Archive can't be reached."""
+        self.data_server_webid(server)
 
     # -- lookup ----------------------------------------------------------
     def data_server_webid(self, server: str) -> str:

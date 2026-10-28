@@ -1,7 +1,7 @@
 """Check the simulator against archives produced by a real PI Data Archive.
 
 Each case is a folder under tests/parity/ containing:
-  snapshot.csv  Timestamp,Value  every snapshot event (for example from `pict piwebapi record`)
+  snapshot.csv  Timestamp,Value  every snapshot event (for example from `pict pi record`)
   archive.csv   Timestamp,Value  what PI archived over the same period with compression on
   config.csv    one row of PI attributes (PI Builder column names) in force during the capture
 The test skips when no cases are present.
