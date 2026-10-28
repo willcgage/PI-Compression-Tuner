@@ -2,8 +2,8 @@
 
 Three tabs:
   * Overview: where every point sits on retention versus archive volume, with a table of verdicts.
-  * Workbench: one point's trade-off curve, a probe to try any CompDev, and the trend with a
-    residual strip showing where detail would be lost.
+  * Point detail: one point's finding in plain words, now-versus-proposed outcome and settings,
+    the trend with a residual strip, and a trade-off curve with a probe to try any CompDev.
   * Export: the PI Builder sheet, results table and HTML report.
 Recommendations only: nothing here writes to PI.
 """
@@ -187,13 +187,13 @@ run_opts: TuneOptions = ss.get("opts", opts)
 def effective(r):
     """The result with an adopted probe setting in place of the proposal."""
     a = ss.adopted.get(r.tag)
-    return dataclasses.replace(r, recommended=a, notes=r.notes + ["CompDev adopted in the workbench."]) if a else r
+    return dataclasses.replace(r, recommended=a, notes=r.notes + ["CompDev adopted from the probe."]) if a else r
 
 
 results = [effective(r) for r in ss.results]
 by_tag = {r.tag: r for r in results}
 
-tab_overview, tab_bench, tab_export = st.tabs(["Overview", "Workbench", "Export"])
+tab_overview, tab_point, tab_export = st.tabs(["Overview", "Point detail", "Export"], key="main_tab", on_change="rerun")
 
 # --- Overview -------------------------------------------------------------
 
@@ -283,24 +283,160 @@ with tab_overview:
     )
     ss.export_choice.update(dict(zip(edited["Tag"], edited["Export"])))
 
-# --- Workbench ------------------------------------------------------------
+# --- Point detail ---------------------------------------------------------
 
-with tab_bench:
-    tag = st.selectbox("Point", list(by_tag), key="detail_tag", label_visibility="collapsed",
+def _num(x: float) -> str:
+    return f"{x:.4g}"
+
+
+def _secs(x: float) -> str:
+    for unit, n in (("h", 3600), ("min", 60)):
+        if x >= n and x % n == 0:
+            return f"{x / n:g} {unit}"
+    return f"{x:g} s"
+
+
+def _attr_rows(now: PointConfig, new: PointConfig | None, raw_mode: bool):
+    rows = []
+
+    def add(name, a, b, fmt=_num, sub=False):
+        changed = new is not None and not np.isclose(float(a), float(b))
+        rows.append((name, fmt(a), fmt(b) if new is not None else "", changed, sub))
+
+    nw = new or now
+    add("ExcDev", now.excdev, nw.excdev)
+    add("ExcMin", now.excmin, nw.excmin, _secs)
+    add("ExcMax", now.excmax, nw.excmax, _secs)
+    add("CompDev", now.compdev, nw.compdev)
+    add("CompDev % span", now.compdevpercent, nw.compdevpercent, lambda x: f"{x:.3g}%", sub=True)
+    add("CompMin", now.compmin, nw.compmin, _secs)
+    add("CompMax", now.compmax, nw.compmax, _secs)
+    add("Compressing", int(now.compressing), int(nw.compressing), lambda x: "On" if x else "Off")
+    add("Zero", now.zero, nw.zero, sub=True)
+    add("Span", now.span, nw.span, sub=True)
+    add("Step", int(now.step), int(nw.step), lambda x: "Yes" if x else "No", sub=True)
+    return rows
+
+
+def _finding(r, prop, target: float, adopted: bool) -> str:
+    c, cur = r.classification, r.current
+    if cur is None:
+        return f"<b>{style.esc(c.value)}.</b> {style.esc(r.notes[0] if r.notes else '')} Nothing to tune for this point."
+    now = f"{_fmt_n(cur.events_per_day)} events a day"
+    if prop is not None:
+        cut = 100 * (1 - prop.events_per_day / max(cur.events_per_day, 1e-9))
+        how = (f"CompDev <b>{_num(prop.config.compdev)}</b> keeps {prop.score.retention:.1%} of the signal's movement "
+               f"with {_fmt_n(prop.events_per_day)} events a day")
+        pct = f"{abs(cut):.1f}" if abs(cut) >= 99 else f"{abs(cut):.0f}"
+        how += f", {pct}% fewer." if cut > 0 else f", {pct}% more."
+    lead = {
+        Classification.STORING_NOISE: f"<b>Storing noise.</b> The archive keeps {now}, far more than the signal needs. ",
+        Classification.LOSING_DETAIL: f"<b>Losing detail.</b> Today the archive keeps {cur.score.retention:.1%} of the "
+                                      f"signal's movement, below the {target:.1%} target. ",
+        Classification.ON_TARGET: f"<b>On target.</b> Current settings keep {cur.score.retention:.1%} of the signal's "
+                                  f"movement with {now}. No change is proposed.",
+        Classification.LITTLE_TO_GAIN: "<b>Little to gain.</b> ",
+        Classification.RANGE_MISMATCH: "<b>Range mismatch.</b> Check Zero and Span before changing compression. ",
+    }.get(c, f"<b>{style.esc(c.value)}.</b> ")
+    if c == Classification.ON_TARGET and not adopted:
+        return lead
+    if c == Classification.LITTLE_TO_GAIN:
+        lead += style.esc(r.notes[0]) + " " if r.notes else ""
+    if prop is None:
+        return lead + "Not exported by default; review the trend before changing anything."
+    return lead + ("The adopted probe value: " if adopted else "") + how
+
+
+with tab_point:
+    tags = list(by_tag)
+
+    def _step(d):
+        ss.detail_tag = tags[(tags.index(ss.get("detail_tag", tags[0])) + d) % len(tags)]
+
+    n1, n2, n3 = st.columns([14, 1, 1], vertical_alignment="center")
+    tag = n1.selectbox("Point", tags, key="detail_tag", label_visibility="collapsed",
                        format_func=lambda t: f"{t}   ·   {by_tag[t].classification.value}")
+    n2.button(":material/chevron_left:", key="prev_pt", on_click=_step, args=(-1,), help="Previous point",
+              use_container_width=True)
+    n3.button(":material/chevron_right:", key="next_pt", on_click=_step, args=(1,), help="Next point",
+              use_container_width=True)
+
     r = by_tag[tag]
     base = ss.results[[x.tag for x in ss.results].index(tag)]  # the tuner's own proposal
     s: Series = ss.series[tag]
+    cfg_now = ss.configs.get(tag, PointConfig())
     days = max(s.duration, 1) / 86400
-    st.markdown(f'<div class="pct-point"><h3>{style.esc(tag)}</h3>{style.chip(r.classification)}'
-                f'<span class="meta">{len(s):,} input events over {days:.1f} days · noise σ {r.noise:.3g}</span></div>',
-                unsafe_allow_html=True)
-    if r.notes:
-        st.markdown(f'<p class="pct-note">{style.esc(" ".join(r.notes))}</p>', unsafe_allow_html=True)
+    prop = r.recommended if (r.recommended is not None and r.changes) else None
+    adopted = tag in ss.adopted
 
-    if r.current is None:
-        st.info("There is nothing to tune for this point.")
-    else:
+    h1, h2 = st.columns([5, 2], vertical_alignment="center")
+    h1.markdown(f'<div class="pct-point"><h3>{style.esc(tag)}</h3>{style.chip(r.classification)}'
+                f'<span class="meta">{len(s):,} input events over {days:.1f} days</span></div>', unsafe_allow_html=True)
+    if r.changes:
+        default_on = ss.export_choice.get(tag, r.ready_to_export or adopted)
+
+        def _toggle(t=tag):
+            ss.export_choice[t] = ss[f"exp_{t}"]
+            ss.table_v += 1
+
+        h2.toggle("Include in PI Builder sheet", value=default_on, key=f"exp_{tag}", on_change=_toggle)
+    st.markdown(style.finding(_finding(r, prop, run_opts.target, adopted), VERDICT_COLOR[r.classification]),
+                unsafe_allow_html=True)
+
+    if r.current is not None:
+        cur = r.current
+        new = prop or cur
+        cards = []
+        hi = np.log10(max(cur.events_per_day, new.events_per_day, 10) * 1.2)
+        frac = lambda x: np.log10(max(x, 1)) / hi  # noqa: E731
+        cut = 100 * (new.events_per_day - cur.events_per_day) / max(cur.events_per_day, 1e-9)
+        cards.append(dict(label="Archive events per day", value=_fmt_n(new.events_per_day),
+                          delta=(f"{cut:+.1f}%", "good" if cut <= 0 else "warn") if prop else None,
+                          sub=f"from {_fmt_n(cur.events_per_day)} today" if prop else "unchanged",
+                          bars=[("Now", frac(cur.events_per_day), INK["now"])]
+                          + ([("Proposed", frac(new.events_per_day), INK["proposal"])] if prop else [])))
+        ok = new.score.retention >= run_opts.target
+        cards.append(dict(label="Retention", value=f"{new.score.retention:.1%}",
+                          delta=("meets target", "good") if ok else ("below target", "warn"),
+                          sub=(f"from {cur.score.retention:.1%} · " if prop else "") + f"target {run_opts.target:.1%}",
+                          bars=[("Now", cur.score.retention, INK["now"])]
+                          + ([("Proposed", new.score.retention, INK["proposal"])] if prop else []),
+                          tick=run_opts.target))
+        span_txt = f" · {100 * new.score.max_error / cfg_now.span:.2g}% of span" if cfg_now.span > 0 else ""
+        emax = max(cur.score.max_error, new.score.max_error, 1e-12) * 1.15
+        cards.append(dict(label="Largest error", value=f"{new.score.max_error:.3g}",
+                          sub=f"{new.score.max_error / r.noise:.1f}× noise σ{span_txt}" if r.noise else span_txt,
+                          bars=[("Now", cur.score.max_error / emax, INK["now"])]
+                          + ([("Proposed", new.score.max_error / emax, INK["proposal"])] if prop else [])))
+        yearly = new.events_per_day * 365
+        cards.append(dict(label="Archive events per year", value=f"{yearly:,.0f}" if yearly < 1e6 else f"{yearly / 1e6:.1f} M",
+                          sub=f"from {cur.events_per_day * 365:,.0f}" if prop else "at current settings"))
+        st.markdown(style.outcome(cards), unsafe_allow_html=True)
+
+    trend_box = st.container()
+
+    a1, a2 = st.columns([3, 2], gap="large")
+    with a1:
+        st.markdown(style.section("Settings"), unsafe_allow_html=True)
+        st.markdown(style.attrs_table(_attr_rows(cfg_now, prop.config if prop else None, run_opts.input_mode == "raw"),
+                                      proposed=prop is not None), unsafe_allow_html=True)
+    with a2:
+        st.markdown(style.section("Signal"), unsafe_allow_html=True)
+        dt = np.diff(s.t)
+        items = [("Input events", f"{len(s):,}"), ("Period", f"{days:.1f} days"),
+                 ("Typical interval", _secs(round(float(np.median(dt)), 1)) if len(dt) else "n/a"),
+                 ("Observed range", f"{s.v.min():.4g} to {s.v.max():.4g}" if len(s) else "n/a"),
+                 ("Noise σ", f"{r.noise:.3g}")]
+        if cfg_now.span > 0 and len(s):
+            items.append(("Range used", f"{100 * np.ptp(s.v) / cfg_now.span:.0f}% of span"))
+        if prop is not None and r.noise > 0:
+            items.append(("Proposed CompDev", f"{prop.config.compdev / r.noise:.1f}× noise σ"))
+        st.markdown(style.profile(items), unsafe_allow_html=True)
+        st.markdown(style.notes([n for n in r.notes if n not in _finding(r, prop, run_opts.target, adopted)]),
+                    unsafe_allow_html=True)
+
+    if r.current is not None:
+        st.markdown(style.section("Explore other settings"), unsafe_allow_html=True)
         if tag not in ss.curves:
             ss.curves[tag] = tradeoff_curve(s, r.current.config, run_opts, noise=r.noise)
         curve = ss.curves[tag]
@@ -348,7 +484,7 @@ with tab_bench:
                     ss.export_choice[tag] = True
                     ss.table_v += 1
                     st.rerun()
-                if tag in ss.adopted and b2.button("Undo", key=f"undo_{tag}", use_container_width=True):
+                if adopted and b2.button("Undo", key=f"undo_{tag}", use_container_width=True):
                     del ss.adopted[tag]
                     ss.export_choice.pop(tag, None)
                     ss.table_v += 1
@@ -382,26 +518,65 @@ with tab_bench:
         def ts(t):
             return pd.to_datetime(t, unit="s", utc=True)
 
-        st.markdown(style.section("Trend"), unsafe_allow_html=True)
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.78, 0.22], vertical_spacing=0.05)
-        et, ev = envelope(s.t, s.v, 3000)
-        fig.add_scatter(x=ts(et), y=ev, name="Input", line=dict(color=INK["input"], width=1), row=1, col=1)
-        nt, nv = envelope(*archive_of(r.current.config), 3000)
-        fig.add_scatter(x=ts(nt), y=nv, name="Archive now", line=dict(color=INK["now"], width=1.3), row=1, col=1)
-        pt, pv = archive_of(probe_cfg)
-        fig.add_scatter(x=ts(pt), y=pv, name="Archive at probe", mode="lines+markers",
-                        marker=dict(size=4, color=INK["probe"]), line=dict(color=INK["probe"], width=1.8), row=1, col=1)
-        excess = np.maximum(0, np.abs(s.v - reconstruct(pt, pv, s.t, probe_cfg.step)) - run_opts.noise_band * r.noise)
-        xt, xv = envelope(s.t, excess, 1500)
-        fig.add_scatter(x=ts(xt), y=xv, name="Detail lost", fill="tozeroy", fillcolor="rgba(208,87,74,0.25)",
-                        line=dict(color=INK["loss"], width=1), row=2, col=1)
-        style.plot_layout(fig, 500, hovermode="x unified")
-        fig.update_yaxes(title_text="Value", row=1, col=1)
-        fig.update_yaxes(title_text="Lost", row=2, col=1, rangemode="tozero")
-        st.plotly_chart(fig, use_container_width=True, config=PLOT_CONFIG)
-        st.markdown('<p class="pct-note">The lower strip is how far the probe\'s archive strays from the input beyond '
-                    "the noise band. Flat means no real detail is lost. Drag across the chart to zoom; double-click to reset.</p>",
-                    unsafe_allow_html=True)
+        show_probe = not np.isclose(probe_cfg.compdev, new.config.compdev) or not np.isclose(probe_cfg.excdev, new.config.excdev)
+        lines = [("Archive now", r.current.config, INK["now"])]
+        if prop is not None:
+            lines.append(("Archive proposed", prop.config, INK["proposal"]))
+        if show_probe:
+            lines.append(("Archive at probe", probe_cfg, INK["probe"]))
+        archives = {name: archive_of(cfg) for name, cfg, _ in lines}
+        judged_name, judged_cfg, _ = lines[-1]
+        jt, jv = archives[judged_name]
+        err = np.abs(s.v - reconstruct(jt, jv, s.t, judged_cfg.step))
+        excess = np.maximum(0, err - run_opts.noise_band * r.noise)
+
+        with trend_box:
+            t1, t2 = st.columns([3, 2], vertical_alignment="bottom")
+            t1.markdown(style.section("Trend"), unsafe_allow_html=True)
+            view = t2.segmented_control("View", ["Whole period", "Largest miss"], default="Whole period",
+                                        key=f"view_{tag}", label_visibility="collapsed") or "Whole period"
+            if view == "Largest miss":
+                k = int(np.argmax(err))
+                half = run_opts.window_s / 2
+                w = (s.t >= s.t[k] - half) & (s.t <= s.t[k] + half)
+                tt, vv = s.t[w], s.v[w]
+                xt, xv = s.t[w], excess[w]
+            else:
+                tt, vv = envelope(s.t, s.v, 3000)
+                xt, xv = envelope(s.t, excess, 1500)
+                w = None
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.8, 0.2], vertical_spacing=0.05)
+            fig.add_scatter(x=ts(tt), y=vv, name="Input", line=dict(color=INK["input"], width=1), row=1, col=1)
+            for name, cfg, color in lines:
+                at, av = archives[name]
+                if w is not None:
+                    # one event either side so the segments into the window are drawn
+                    i0 = max(int(np.searchsorted(at, tt[0])) - 1, 0)
+                    i1 = int(np.searchsorted(at, tt[-1], side="right")) + 1
+                    at, av = at[i0:i1], av[i0:i1]
+                    size = 4 if name == "Archive now" else 8
+                    mode, mk = "lines+markers", dict(size=size, color=color, line=dict(width=1, color="white"))
+                else:
+                    mode, mk = "lines", None
+                    at, av = envelope(at, av, 3000)
+                fig.add_scatter(x=ts(at), y=av, name=name, mode=mode, marker=mk, row=1, col=1,
+                                line=dict(color=color, width=1.8 if name != "Archive now" else 1.3,
+                                          shape="hv" if cfg.step else "linear"))
+            fig.add_scatter(x=ts(xt), y=xv, name="Detail lost", fill="tozeroy", fillcolor="rgba(208,87,74,0.25)",
+                            line=dict(color=INK["loss"], width=1), row=2, col=1)
+            style.plot_layout(fig, 460, hovermode="x unified")
+            fig.update_yaxes(title_text="Value", row=1, col=1)
+            fig.update_yaxes(title_text="Lost", row=2, col=1, rangemode="tozero")
+            if w is not None:
+                pad = max(np.ptp(vv), r.noise, 1e-9) * 0.15
+                fig.update_xaxes(range=[ts(tt[0]), ts(tt[-1])])
+                fig.update_yaxes(range=[vv.min() - pad, vv.max() + pad], row=1, col=1)
+            st.plotly_chart(fig, use_container_width=True, config=PLOT_CONFIG)
+            what = {"Archive now": "today's archive", "Archive proposed": "the proposed archive",
+                    "Archive at probe": "the probe's archive"}[judged_name]
+            st.markdown(f'<p class="pct-note">The lower strip shows where {what} strays from the input by more than the '
+                        "noise band; flat means no real detail is lost. <b>Largest miss</b> zooms to one scoring window "
+                        "around the biggest error, with each archived event marked.</p>", unsafe_allow_html=True)
 
 # --- Export ---------------------------------------------------------------
 

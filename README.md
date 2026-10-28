@@ -62,10 +62,13 @@ pict ui          # opens http://localhost:8501
 3. **Overview tab:**
    - A map plots every point by archive events per day against retention, with arrows showing where each proposal moves it.
    - Below the map is the verdict table. Tick **Export** for the rows you want selected in the PI Builder sheet. Rows ready to export are ticked by default.
-4. **Workbench tab:**
+4. **Point detail tab:**
+   - A plain-language finding, then now-versus-proposed archive volume, retention and largest error.
+   - The point's settings with changed attributes highlighted, a signal profile, and the trend (whole period, or zoomed to the largest miss).
    - A trade-off curve shows what each CompDev costs in archive volume and buys in retention, with **Now**, **Proposal** and **Probe** marked.
    - Set the probe to any CompDev (and ExcDev, in raw mode) to see its retention, events per day and largest error.
-   - The trend below adds a red strip showing where the probe's archive strays from the input beyond the noise band.
+   - The trend's red strip shows where the proposed (or probe) archive strays from the input beyond the noise band.
+   - Use the toggle to include or leave out the point from the PI Builder sheet, and **Previous**/**Next** to step through points.
    - Click **Adopt** to export the probe value instead of the proposal.
 5. **Export tab:** preview and download the PI Builder sheet, the results table, or the HTML report.
 

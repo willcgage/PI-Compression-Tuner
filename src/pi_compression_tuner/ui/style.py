@@ -77,6 +77,45 @@ h1, h2, h3, h4 {{ font-family: {FONT}; letter-spacing: -0.01em; }}
 .pct-compare > div.k {{ text-align:left; color:{INK['muted']}; }}
 .pct-compare > div.ok {{ color:#2f7a3c; }} .pct-compare > div.bad {{ color:#c0392b; }}
 
+.pct-finding {{ font-size:1.02rem; line-height:1.55; color:{INK['text']}; border-left:3px solid {INK['proposal']};
+  padding:4px 0 4px 14px; margin:8px 0 14px; max-width:95ch; }}
+.pct-finding b {{ font-weight:600; }}
+
+.pct-outcome {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; margin:4px 0 10px; }}
+.pct-oc {{ border:1px solid {INK['rule']}; border-radius:8px; padding:14px 16px 12px; background:#fff; }}
+.pct-oc .l {{ font-size:.75rem; text-transform:uppercase; letter-spacing:.06em; color:{INK['muted']}; }}
+.pct-oc .row {{ display:flex; align-items:baseline; gap:10px; margin-top:2px; }}
+.pct-oc .v {{ font-size:1.6rem; font-weight:600; color:{INK['text']}; font-variant-numeric:tabular-nums; }}
+.pct-oc .d {{ font-size:.8rem; font-weight:600; padding:1px 7px; border-radius:999px; background:{INK['panel']}; }}
+.pct-oc .d.good {{ color:{INK['proposal']}; }} .pct-oc .d.warn {{ color:{INK['now']}; }}
+.pct-oc .s {{ font-size:.82rem; color:{INK['muted']}; margin-top:2px; }}
+.pct-bars {{ margin-top:10px; display:grid; grid-template-columns:62px 1fr; gap:4px 8px; align-items:center;
+  font-size:.72rem; color:{INK['muted']}; }}
+.pct-bars .track {{ position:relative; height:7px; background:{INK['panel']}; border-radius:4px; }}
+.pct-bars .fill {{ position:absolute; left:0; top:0; bottom:0; border-radius:4px; }}
+.pct-bars .tick {{ position:absolute; top:-3px; bottom:-3px; width:2px; background:{INK['text']}; opacity:.55; }}
+
+.pct-attrs {{ width:100%; border-collapse:collapse; font-size:.88rem; font-variant-numeric:tabular-nums; }}
+.pct-attrs th {{ text-align:right; font-size:.75rem; text-transform:uppercase; letter-spacing:.06em; color:{INK['muted']};
+  font-weight:600; padding:6px 10px; border-bottom:1px solid {INK['text']}; }}
+.pct-attrs th:first-child, .pct-attrs td:first-child {{ text-align:left; }}
+.pct-attrs td {{ text-align:right; padding:7px 10px; border-bottom:1px solid {INK['rule']}; }}
+.pct-attrs td:first-child {{ font-family:{MONO}; font-size:.82rem; }}
+.pct-attrs td.same {{ color:{INK['muted']}; }}
+.pct-attrs tr.chg td {{ background:rgba(19,112,138,.06); }}
+.pct-attrs tr.chg td.new {{ color:{INK['proposal']}; font-weight:600; }}
+.pct-attrs tr.chg td:first-child {{ box-shadow:inset 3px 0 0 {INK['proposal']}; }}
+.pct-attrs tr.sub td {{ font-size:.8rem; color:{INK['muted']}; }}
+
+.pct-profile {{ display:grid; grid-template-columns:auto 1fr; gap:0; font-size:.88rem; margin:0; }}
+.pct-profile dt, .pct-profile dd {{ padding:7px 0; border-bottom:1px solid {INK['rule']}; margin:0; }}
+.pct-profile dt {{ color:{INK['muted']}; padding-right:16px; }}
+.pct-profile dd {{ text-align:right; font-variant-numeric:tabular-nums; }}
+.pct-notes {{ margin:12px 0 0; padding:0; list-style:none; font-size:.85rem; color:{INK['muted']}; }}
+.pct-notes li {{ padding:6px 0 6px 18px; position:relative; font-size:.85rem; margin:0; }}
+.pct-notes li::before {{ content:""; position:absolute; left:4px; top:13px; width:6px; height:6px; border-radius:50%;
+  background:{INK['now']}; }}
+
 .pct-steps {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; margin-top:18px; }}
 .pct-step {{ border:1px solid {INK['rule']}; border-radius:8px; padding:16px 18px; background:#fff; }}
 .pct-step .n {{ font-family:{MONO}; font-size:.8rem; color:{INK['proposal']}; }}
@@ -138,3 +177,49 @@ def plot_layout(fig, height: int, legend_y: float = 1.02, **kw):
     fig.update_yaxes(gridcolor="#eef2f4", zeroline=False, linecolor=INK["rule"],
                      title_font=dict(size=12, color=INK["muted"]))
     return fig
+
+
+def finding(text_html: str, color: str) -> str:
+    return f'<div class="pct-finding" style="border-left-color:{color}">{text_html}</div>'
+
+
+def _bar(label: str, frac: float, color: str, tick: float | None = None) -> str:
+    frac = min(max(frac, 0.0), 1.0)
+    t = f'<span class="tick" style="left:{100 * min(max(tick, 0), 1):.1f}%"></span>' if tick is not None else ""
+    return (f'<span>{esc(label)}</span><span class="track"><span class="fill" '
+            f'style="width:{max(100 * frac, 1.5):.1f}%;background:{color}"></span>{t}</span>')
+
+
+def outcome(cards: list[dict]) -> str:
+    """Cards with a headline value, a delta badge, a sub-line and paired now/proposed bars.
+
+    Each card: label, value, sub (HTML), optional delta=(text, 'good'|'warn'), optional
+    bars=[(label, fraction, color)] and tick (fraction).
+    """
+    out = []
+    for c in cards:
+        d = f'<span class="d {c["delta"][1]}">{esc(c["delta"][0])}</span>' if c.get("delta") else ""
+        bars = "".join(_bar(l, f, col, c.get("tick")) for l, f, col in c.get("bars", []))
+        bars = f'<div class="pct-bars">{bars}</div>' if bars else ""
+        out.append(f'<div class="pct-oc"><div class="l">{esc(c["label"])}</div><div class="row">'
+                   f'<span class="v">{esc(c["value"])}</span>{d}</div><div class="s">{c.get("sub", "")}</div>{bars}</div>')
+    return '<div class="pct-outcome">' + "".join(out) + "</div>"
+
+
+def attrs_table(rows: list[tuple], proposed: bool) -> str:
+    """Point attributes, now against proposed. Rows: (name, now, new, changed, is_sub)."""
+    head = "<tr><th>Attribute</th><th>Now</th>" + ("<th>Proposed</th>" if proposed else "") + "</tr>"
+    body = []
+    for name, now, new, changed, sub in rows:
+        cls = "chg" if changed else ("sub" if sub else "")
+        newcell = (f'<td class="{"new" if changed else "same"}">{esc(new)}</td>' if proposed else "")
+        body.append(f'<tr class="{cls}"><td>{esc(name)}</td><td>{esc(now)}</td>{newcell}</tr>')
+    return f'<table class="pct-attrs">{head}{"".join(body)}</table>'
+
+
+def profile(items: list[tuple[str, str]]) -> str:
+    return '<dl class="pct-profile">' + "".join(f"<dt>{esc(k)}</dt><dd>{esc(v)}</dd>" for k, v in items) + "</dl>"
+
+
+def notes(items: list[str]) -> str:
+    return '<ul class="pct-notes">' + "".join(f"<li>{esc(n)}</li>" for n in items) + "</ul>" if items else ""

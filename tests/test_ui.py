@@ -23,7 +23,7 @@ def test_demo_workflow_produces_recommendations():
     at = _loaded_and_run()
     text = " ".join(m.value for m in at.markdown)
     assert "PI Compression Tuner" in text and "Proposed changes" in text
-    assert [t.label for t in at.tabs] == ["Overview", "Workbench", "Export"]
+    assert [t.label for t in at.tabs] == ["Overview", "Point detail", "Export"]
     assert any("PI Builder sheet has" in m.value for m in at.markdown)
 
 
@@ -33,7 +33,7 @@ def test_probe_value_can_be_adopted():
     at.number_input(key="cd_DEMO.TEMP.PV").set_value(0.1).run()
     at.button(key="adopt_DEMO.TEMP.PV").click().run()
     assert not at.exception, at.exception
-    assert any("CompDev adopted in the workbench" in m.value for m in at.markdown)
+    assert any("CompDev adopted from the probe" in m.value for m in at.markdown)
 
 
 def test_pi_errors_are_shown_not_raised():
@@ -47,3 +47,14 @@ def test_pi_errors_are_shown_not_raised():
     at.button(key="load_pi").click().run()
     assert not at.exception
     assert at.error and "Could not read from PI" in at.error[0].value
+
+
+def test_point_detail_navigation_and_zoom():
+    at = _loaded_and_run()
+    first = at.selectbox(key="detail_tag").value
+    at.button(key="next_pt").click().run()
+    assert at.selectbox(key="detail_tag").value != first
+    tag = at.selectbox(key="detail_tag").value
+    assert any("Archive events per day" in m.value for m in at.markdown)
+    at.button_group(key=f"view_{tag}").set_value("Largest miss").run()
+    assert not at.exception, at.exception
