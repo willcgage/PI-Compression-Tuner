@@ -72,6 +72,8 @@ def pibuilder_frame(results: list[TuneResult], server: str = "", include_excdev:
     df = pd.DataFrame(rows, columns=cols)
     if df["Compressing"].isna().all():
         df = df.drop(columns="Compressing")
+    else:
+        df["Compressing"] = df["Compressing"].astype("Int64")
     return df
 
 

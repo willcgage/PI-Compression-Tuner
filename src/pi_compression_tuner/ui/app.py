@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -28,17 +29,14 @@ from pi_compression_tuner.report import envelope, write_report
 from pi_compression_tuner.simulate import simulate_archive
 from pi_compression_tuner.sources.csvfiles import read_configs, read_series
 from pi_compression_tuner.tune import Classification, TuneOptions, evaluate_config, tradeoff_curve, tune_point
+from pi_compression_tuner.ui import style
+from pi_compression_tuner.ui.style import INK, VERDICT_COLOR
 
-INK = {"input": "#8d99a3", "now": "#b5651d", "proposal": "#13708a", "probe": "#6d4bb3", "loss": "#c0392b"}
-VERDICT_COLOR = {
-    Classification.ON_TARGET: "#2f7a3c", Classification.STORING_NOISE: "#b5651d",
-    Classification.LOSING_DETAIL: "#c0392b", Classification.LITTLE_TO_GAIN: "#4b5d9a",
-    Classification.RANGE_MISMATCH: "#4b5d9a", Classification.NOT_MOVING: "#8d99a3",
-    Classification.TOO_FEW_EVENTS: "#8d99a3",
-}
 WINDOWS = {"15 min": 900, "30 min": 1800, "1 h": 3600, "4 h": 14400}
+PLOT_CONFIG = {"displaylogo": False, "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]}
 
-st.set_page_config(page_title="PI Compression Tuner", layout="wide")
+st.set_page_config(page_title="PI Compression Tuner", layout="wide", initial_sidebar_state="expanded")
+st.markdown(style.CSS, unsafe_allow_html=True)
 ss = st.session_state
 for k, v in {"series": None, "configs": {}, "results": None, "adopted": {}, "source_note": "",
              "export_choice": {}, "table_v": 0, "curves": {}}.items():
@@ -48,6 +46,10 @@ for k, v in {"series": None, "configs": {}, "results": None, "adopted": {}, "sou
 def _reset_results():
     ss.results, ss.adopted, ss.curves, ss.export_choice = None, {}, {}, {}
     ss.table_v += 1
+
+
+def _fmt_n(x: float) -> str:
+    return f"{x:,.0f}" if x >= 100 else f"{x:.3g}"
 
 
 # --- data loading ---------------------------------------------------------
@@ -71,53 +73,57 @@ def _load_pi(server, source, url, auth, verify, afsdk_dir, tags, name_filter, li
     bar = st.progress(0.0, text="Reading archived values")
     series = fetch_recorded(conn.source, refs, start, end, progress=lambda i, n: bar.progress(i / n, text=f"Read {i} of {n} points"))
     bar.empty()
-    via = "the PI Web API" if conn.kind == "webapi" else "AF SDK"
-    return series, configs, conn.note or f"Read {len(refs)} points from {server} through {via}."
+    via = "PI Web API" if conn.kind == "webapi" else "AF SDK"
+    if conn.note:
+        st.toast(conn.note)
+    return series, configs, f"{server} · {len(refs)} points · {via}"
 
 
 with st.sidebar:
-    st.subheader("Data")
-    origin = st.radio("Source", ["Demo data", "CSV files", "PI server"], key="origin", horizontal=True,
+    st.markdown('<div class="pct-brand"><b>PI Compression Tuner</b><span>Read-only · recommendations</span></div>',
+                unsafe_allow_html=True)
+    st.markdown("### Data")
+    origin = st.radio("Source", ["Demo data", "CSV files", "PI server"], key="origin", label_visibility="collapsed",
                       help="CSV files can come from `pict pi record` (snapshot stream) or any export.")
     if origin == "Demo data":
         days = st.slider("Days of data", 1, 7, 3, key="demo_days")
         if st.button("Load demo data", type="primary", key="load_demo", use_container_width=True):
             ss.series, ss.configs = demo_data(days)
-            ss.source_note = "Synthetic demo data: four points with deliberately poor settings."
+            ss.source_note = f"Demo · 4 points · {days} days"
             _reset_results()
     elif origin == "CSV files":
-        data_up = st.file_uploader("Data CSV", type="csv", key="data_up",
+        data_up = st.file_uploader("Data", type="csv", key="data_up",
                                    help="Long (Tag, Timestamp, Value) or wide (Timestamp, one column per tag).")
-        cfg_up = st.file_uploader("Point settings CSV (optional)", type="csv", key="cfg_up",
+        cfg_up = st.file_uploader("Point settings (optional)", type="csv", key="cfg_up",
                                   help="PI Builder column names: Name, ExcDev, CompDev, CompMax, Span, ...")
         if st.button("Load files", type="primary", disabled=data_up is None, key="load_csv", use_container_width=True):
             try:
                 ss.series = _read_upload(data_up, read_series)
                 ss.configs = _read_upload(cfg_up, read_configs) if cfg_up else {}
-                ss.source_note = f"Loaded {len(ss.series)} points from {data_up.name}."
+                ss.source_note = f"{data_up.name} · {len(ss.series)} points"
                 _reset_results()
             except Exception as e:
                 st.error(f"Could not read the files: {e}")
     else:
         server = st.text_input("Data Archive", key="pi_server")
         source = st.selectbox("Connect through", ["auto", "webapi", "afsdk"], key="pi_source",
-                              format_func={"auto": "PI Web API, falling back to AF SDK", "webapi": "PI Web API only",
+                              format_func={"auto": "PI Web API, then AF SDK", "webapi": "PI Web API only",
                                            "afsdk": "AF SDK only"}.get)
         url = st.text_input("PI Web API URL", placeholder="https://pihost/piwebapi", key="pi_url",
                             disabled=source == "afsdk")
+        tags_text = st.text_area("Tags, one per line", key="pi_tags", height=90)
+        name_filter = st.text_input("or a tag filter", placeholder="FIC*", key="pi_filter")
+        c1, c2 = st.columns(2)
+        start = c1.text_input("Start", "*-7d", key="pi_start")
+        end = c2.text_input("End", "*", key="pi_end")
         with st.expander("Connection options"):
             auth = st.selectbox("Web API sign-in", ["kerberos", "basic", "anonymous"], key="pi_auth",
                                 help="basic reads PI_WEBAPI_USER and PI_WEBAPI_PASSWORD from the environment.")
             verify = st.checkbox("Check TLS certificate", value=True, key="pi_verify")
             afsdk_dir = st.text_input("AF SDK folder", key="pi_afsdk_dir")
-        tags_text = st.text_area("Tags, one per line", key="pi_tags")
-        name_filter = st.text_input("…or a tag filter", placeholder="FIC*", key="pi_filter")
-        limit = st.number_input("Most points", 1, 5000, 100, key="pi_limit")
-        c1, c2 = st.columns(2)
-        start = c1.text_input("Start", "*-7d", key="pi_start")
-        end = c2.text_input("End", "*", key="pi_end")
-        st.caption("Reads archived values, which suits points whose compression is off or very tight. "
-                   "For other points, record the snapshot stream with `pict pi record` and load it as CSV files.")
+            limit = st.number_input("Most points", 1, 5000, 100, key="pi_limit")
+        st.caption("Reads archived values: right for points whose compression is off or very tight. "
+                   "For the rest, record with `pict pi record` and load the CSV files.")
         if st.button("Read from PI", type="primary", disabled=not server, key="load_pi", use_container_width=True):
             try:
                 tags = [t.strip() for t in tags_text.splitlines() if t.strip()]
@@ -127,16 +133,16 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Could not read from PI: {e}")
 
-    st.subheader("Tuning")
+    st.markdown("### Tuning")
     mode = st.radio("The data is", ["snapshot", "raw"], key="mode",
-                    format_func={"snapshot": "the snapshot stream (tune CompDev)",
-                                 "raw": "raw interface values (tune ExcDev and CompDev)"}.get)
-    target_pct = st.slider("Target retention, %", 80.0, 99.9, 95.0, 0.1, key="target",
+                    format_func={"snapshot": "Snapshot stream · tune CompDev",
+                                 "raw": "Raw interface values · tune ExcDev and CompDev"}.get)
+    target_pct = st.slider("Target retention", 80.0, 99.9, 95.0, 0.1, format="%.1f%%", key="target",
                            help="Share of the signal's movement, beyond its noise, that the archive must keep.")
     window = st.select_slider("Scoring window", list(WINDOWS), value="1 h", key="window")
     with st.expander("Error limits and ExcDev"):
-        max_err = st.number_input("Largest error, engineering units (0 = none)", 0.0, value=0.0, key="max_err")
-        max_err_pct = st.number_input("Largest error, % of span (0 = none)", 0.0, 100.0, 0.0, key="max_err_pct")
+        max_err = st.number_input("Largest error, engineering units", 0.0, value=0.0, key="max_err", help="0 = no limit")
+        max_err_pct = st.number_input("Largest error, % of span", 0.0, 100.0, 0.0, key="max_err_pct", help="0 = no limit")
         excdev_ratio = st.number_input("ExcDev as a fraction of CompDev", 0.0, 1.0, 0.5, 0.05, key="excdev_ratio",
                                        disabled=mode != "raw")
     run = st.button("Run tuning", type="primary", disabled=ss.series is None, key="run", use_container_width=True)
@@ -156,22 +162,23 @@ if run and ss.series is not None:
     ss.results, ss.opts = results, opts
 
 
-# --- header ---------------------------------------------------------------
+# --- header and empty states ----------------------------------------------
 
-st.title("PI Compression Tuner")
-st.caption("Finds the compression each point needs from how its signal behaves. "
-           "Read-only: nothing is written to PI. Changes leave as a PI Builder sheet for you to review and publish.")
-if ss.source_note:
-    st.caption(f"**Data:** {ss.source_note}")
+st.markdown(style.header(ss.source_note), unsafe_allow_html=True)
 
 if ss.series is None:
-    st.markdown("#### Start by loading data in the sidebar")
-    st.markdown("**Demo data** shows the whole workflow without a PI server.")
+    st.markdown(style.steps([
+        ("Load data", "Use the sidebar: demo data, CSV files from a recording, or archived values from PI."),
+        ("Run tuning", "Pick a target retention. Every point gets a proposed CompDev and a verdict."),
+        ("Review and export", "Check proposals on the trade-off curve, then download a PI Builder sheet."),
+    ]), unsafe_allow_html=True)
     st.stop()
 if ss.results is None:
     n = sum(len(s) for s in ss.series.values())
-    st.markdown(f"#### {len(ss.series)} points loaded ({n:,} events)")
-    st.markdown("Pick a target retention in the sidebar, then **Run tuning**.")
+    st.markdown(style.kpis([("Points loaded", f"{len(ss.series)}", "ready to tune"),
+                            ("Events", f"{n:,}", "across all points")]), unsafe_allow_html=True)
+    st.markdown('<p class="pct-note">Choose a target retention in the sidebar, then press <b>Run tuning</b>.</p>',
+                unsafe_allow_html=True)
     st.stop()
 
 run_opts: TuneOptions = ss.get("opts", opts)
@@ -195,66 +202,83 @@ with tab_overview:
     new_total = sum((r.recommended or r.current).events_per_day for r in results if r.current)
     to_change = sum(1 for r in results if r.changes)
     review = sum(1 for r in results if not r.ready_to_export and r.classification != Classification.ON_TARGET)
-    m = st.columns(4)
-    m[0].metric("Points", len(results))
-    m[1].metric("With a proposed change", to_change)
-    m[2].metric("Need a closer look", review)
-    if cur_total:
-        m[3].metric("Archive events per day", f"{new_total:,.0f}",
-                    f"{100 * (new_total - cur_total) / cur_total:+.1f}% vs {cur_total:,.0f} now", delta_color="off")
+    change = 100 * (new_total - cur_total) / cur_total if cur_total else 0
+    st.markdown(style.kpis([
+        ("Points", f"{len(results)}", f"target retention {run_opts.target:.1%}"),
+        ("Proposed changes", f"{to_change}", f"{len(results) - to_change} unchanged"),
+        ("Need a closer look", f"{review}", "not exported by default" if review else "none"),
+        ("Archive events / day", _fmt_n(new_total),
+         f'<b class="{"down" if change <= 0 else "up"}">{change:+.1f}%</b> from {_fmt_n(cur_total)} today'),
+    ]), unsafe_allow_html=True)
+    counts = Counter(r.classification for r in results)
+    st.markdown(style.chips({c: counts[c] for c in Classification if counts[c]}), unsafe_allow_html=True)
 
-    # Map: each point's archive now, with an arrow to where the proposal puts it.
+    st.markdown(style.section("Where each point sits"), unsafe_allow_html=True)
     ys = [100 * e.score.retention for r in results for e in (r.current, r.recommended) if e is not None]
     low_y = min(ys + [100 * run_opts.target])
     fig = go.Figure()
-    fig.add_hline(y=run_opts.target * 100, line=dict(color=INK["input"], dash="dash", width=1),
-                  annotation_text=f"target {run_opts.target:.1%}", annotation_position="bottom right")
+    fig.add_hrect(y0=run_opts.target * 100, y1=101, fillcolor=INK["proposal"], opacity=0.05, line_width=0)
+    fig.add_hline(y=run_opts.target * 100, line=dict(color=INK["proposal"], dash="dot", width=1),
+                  annotation_text=f"target {run_opts.target:.1%}", annotation_position="bottom right",
+                  annotation_font=dict(size=11, color=INK["proposal"]))
+    for r in results:
+        if r.current and r.recommended and r.changes:
+            fig.add_annotation(x=np.log10(max(r.recommended.events_per_day, 1e-3)), y=100 * r.recommended.score.retention,
+                               ax=np.log10(max(r.current.events_per_day, 1e-3)), ay=100 * r.current.score.retention,
+                               xref="x", yref="y", axref="x", ayref="y", showarrow=True, arrowhead=3, arrowsize=1.1,
+                               arrowwidth=1.2, arrowcolor="rgba(19,112,138,0.45)")
     for c in Classification:
         pts = [r for r in results if r.classification == c and r.current]
         if not pts:
             continue
         fig.add_scatter(x=[r.current.events_per_day for r in pts], y=[100 * r.current.score.retention for r in pts],
-                        mode="markers", name=c.value, text=[r.tag for r in pts],
-                        marker=dict(size=11, color=VERDICT_COLOR[c], line=dict(width=1, color="white")),
-                        hovertemplate="%{text}<br>%{x:,.0f} events/day<br>%{y:.1f}% retained<extra></extra>")
-    for r in results:
-        if r.current and r.recommended and r.changes:
-            fig.add_annotation(x=np.log10(max(r.recommended.events_per_day, 1e-3)), y=100 * r.recommended.score.retention,
-                               ax=np.log10(max(r.current.events_per_day, 1e-3)), ay=100 * r.current.score.retention,
-                               xref="x", yref="y", axref="x", ayref="y", showarrow=True, arrowhead=2, arrowwidth=1,
-                               arrowcolor=INK["proposal"], opacity=0.7)
-    fig.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10), legend=dict(orientation="h", y=-0.2),
-                      xaxis=dict(type="log", title="Archive events per day (log)"),
-                      yaxis=dict(title="Retention, %", range=[max(-2, low_y - 5), 101]))
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption("Each dot is a point's archive today. Arrows show where the proposed setting moves it. "
-               "Good settings sit just above the target line and as far left as possible.")
+                        mode="markers", name=c.value, customdata=[r.tag for r in pts],
+                        marker=dict(size=12, color=VERDICT_COLOR[c], line=dict(width=1.5, color="white")),
+                        hovertemplate="<b>%{customdata}</b><br>%{x:,.0f} events/day<br>%{y:.1f}% retained<extra></extra>")
+    prop = [r for r in results if r.current and r.recommended and r.changes]
+    if prop:
+        fig.add_scatter(x=[r.recommended.events_per_day for r in prop], y=[100 * r.recommended.score.retention for r in prop],
+                        mode="markers", name="With proposal", customdata=[r.tag for r in prop],
+                        marker=dict(size=9, color="white", line=dict(width=2, color=INK["proposal"])),
+                        hovertemplate="<b>%{customdata}</b> with proposal<br>%{x:,.0f} events/day<br>%{y:.1f}% retained<extra></extra>")
+    style.plot_layout(fig, 360, xaxis=dict(type="log", title="Archive events per day (log scale)"),
+                      yaxis=dict(title="Retention (%)", range=[max(-2, low_y - 4), 101]))
+    st.plotly_chart(fig, use_container_width=True, config=PLOT_CONFIG)
+    st.markdown('<p class="pct-note">Filled dots are each point today; open dots are where the proposal puts it. '
+                "The best settings sit just inside the shaded band and as far left as possible.</p>",
+                unsafe_allow_html=True)
 
-    shown = st.multiselect("Verdicts", [c.value for c in Classification],
-                           default=list(dict.fromkeys(r.classification.value for r in results)), key="class_filter")
+    st.markdown(style.section("Verdicts"), unsafe_allow_html=True)
+    shown = st.multiselect("Show verdicts", [c.value for c in Classification], label_visibility="collapsed",
+                           default=list(dict.fromkeys(r.classification.value for r in results)), key="class_filter",
+                           placeholder="Filter by verdict")
     df = results_frame(results)
     df.insert(0, "Export", [ss.export_choice.get(r.tag, r.changes and (r.ready_to_export or r.tag in ss.adopted))
                             for r in results])
+    for c in ("CurrentEventsPerDay", "RecommendedEventsPerDay"):
+        df[c] = df[c].round()
     view = df[df["Classification"].isin(shown)]
     cols = ["Export", "Tag", "Classification", "CurrentCompDev", "RecommendedCompDev", "RecommendedExcDev",
             "CurrentRetention", "RecommendedRetention", "CurrentEventsPerDay", "RecommendedEventsPerDay",
-            "EventChangePercent", "Notes"]
+            "EventChangePercent"]
     if run_opts.input_mode != "raw":
         cols.remove("RecommendedExcDev")
     edited = st.data_editor(
         view[cols], hide_index=True, use_container_width=True, key=f"table_{ss.table_v}",
         disabled=[c for c in cols if c != "Export"],
         column_config={
-            "Export": st.column_config.CheckboxColumn(help="Selected (x) in the PI Builder sheet."),
-            "Classification": st.column_config.TextColumn("Verdict"),
-            "CurrentCompDev": st.column_config.NumberColumn("CompDev now", format="%.4g"),
-            "RecommendedCompDev": st.column_config.NumberColumn("Proposed CompDev", format="%.4g"),
-            "RecommendedExcDev": st.column_config.NumberColumn("Proposed ExcDev", format="%.4g"),
-            "CurrentRetention": st.column_config.NumberColumn("Retained now", format="percent"),
-            "RecommendedRetention": st.column_config.NumberColumn("Retained", format="percent"),
-            "CurrentEventsPerDay": st.column_config.NumberColumn("Events/day now", format="%.0f"),
-            "RecommendedEventsPerDay": st.column_config.NumberColumn("Events/day", format="%.0f"),
-            "EventChangePercent": st.column_config.NumberColumn("Volume change", format="%+.0f%%"),
+            "Export": st.column_config.CheckboxColumn("Export", width="small",
+                                                      help="Selected (x) in the PI Builder sheet."),
+            "Tag": st.column_config.TextColumn("Tag", width="medium"),
+            "Classification": st.column_config.TextColumn("Verdict", width="small"),
+            "CurrentCompDev": st.column_config.NumberColumn("CompDev", format="%.4g", width="small"),
+            "RecommendedCompDev": st.column_config.NumberColumn("→ proposed", format="%.4g", width="small"),
+            "RecommendedExcDev": st.column_config.NumberColumn("ExcDev", format="%.4g", width="small"),
+            "CurrentRetention": st.column_config.NumberColumn("Retained", format="percent", width="small"),
+            "RecommendedRetention": st.column_config.NumberColumn("→ proposed", format="percent", width="small"),
+            "CurrentEventsPerDay": st.column_config.NumberColumn("Events/day", format="localized", width="small"),
+            "RecommendedEventsPerDay": st.column_config.NumberColumn("→ proposed", format="localized", width="small"),
+            "EventChangePercent": st.column_config.NumberColumn("Volume change", format="%+.1f%%", width="small"),
         },
     )
     ss.export_choice.update(dict(zip(edited["Tag"], edited["Export"])))
@@ -262,73 +286,94 @@ with tab_overview:
 # --- Workbench ------------------------------------------------------------
 
 with tab_bench:
-    tag = st.selectbox("Point", list(by_tag), key="detail_tag",
-                       format_func=lambda t: f"{t}  ·  {by_tag[t].classification.value}")
+    tag = st.selectbox("Point", list(by_tag), key="detail_tag", label_visibility="collapsed",
+                       format_func=lambda t: f"{t}   ·   {by_tag[t].classification.value}")
     r = by_tag[tag]
     base = ss.results[[x.tag for x in ss.results].index(tag)]  # the tuner's own proposal
     s: Series = ss.series[tag]
+    days = max(s.duration, 1) / 86400
+    st.markdown(f'<div class="pct-point"><h3>{style.esc(tag)}</h3>{style.chip(r.classification)}'
+                f'<span class="meta">{len(s):,} input events over {days:.1f} days · noise σ {r.noise:.3g}</span></div>',
+                unsafe_allow_html=True)
     if r.notes:
-        st.caption(" ".join(r.notes))
+        st.markdown(f'<p class="pct-note">{style.esc(" ".join(r.notes))}</p>', unsafe_allow_html=True)
 
     if r.current is None:
-        st.info(f"{r.classification.value}: there is nothing to tune for this point.")
+        st.info("There is nothing to tune for this point.")
     else:
         if tag not in ss.curves:
             ss.curves[tag] = tradeoff_curve(s, r.current.config, run_opts, noise=r.noise)
         curve = ss.curves[tag]
         start_cd = float((r.recommended or r.current).config.compdev)
-        left, right = st.columns([5, 2])
+        left, right = st.columns([12, 7], gap="large")
         with right:
-            st.markdown("**Probe**")
-            probe_cd = st.number_input("CompDev", min_value=0.0, value=start_cd, format="%.5g", key=f"cd_{tag}",
-                                       help="Try any value. The curve and the trend update as you change it.")
-            probe_exc = st.number_input("ExcDev", min_value=0.0,
-                                        value=float((r.recommended or r.current).config.excdev),
-                                        format="%.5g", key=f"ed_{tag}", disabled=run_opts.input_mode != "raw",
-                                        help="Only tunable when the data is raw interface values.")
-            probe_cfg = dataclasses.replace(r.current.config, compdev=probe_cd, compressing=True,
-                                            excdev=probe_exc if run_opts.input_mode == "raw" else r.current.config.excdev)
-            probe = evaluate_config(s, probe_cfg, run_opts, noise=r.noise)
-            ok = probe.score.retention >= run_opts.target
-            st.markdown(f"Retained **{probe.score.retention:.1%}** "
-                        f"({'meets' if ok else 'below'} the {run_opts.target:.1%} target)")
-            st.markdown(f"**{probe.events_per_day:,.0f}** archive events per day")
-            st.markdown(f"Largest error **{probe.score.max_error:.4g}** (noise σ {r.noise:.3g})")
-            b1, b2 = st.columns(2)
-            if b1.button("Adopt", key=f"adopt_{tag}", use_container_width=True, help="Use the probe value in the export."):
-                ss.adopted[tag] = probe
-                ss.export_choice[tag] = True
-                ss.table_v += 1
-                st.rerun()
-            if tag in ss.adopted and b2.button("Undo", key=f"undo_{tag}", use_container_width=True):
-                del ss.adopted[tag]
-                ss.export_choice.pop(tag, None)
-                ss.table_v += 1
-                st.rerun()
+            with st.container(border=True):
+                st.markdown("**Probe** · try any setting")
+                c1, c2 = st.columns(2)
+                probe_cd = c1.number_input("CompDev", min_value=0.0, value=start_cd, format="%.4g", key=f"cd_{tag}")
+                probe_exc = c2.number_input("ExcDev", min_value=0.0, format="%.4g", key=f"ed_{tag}",
+                                            value=float((r.recommended or r.current).config.excdev),
+                                            disabled=run_opts.input_mode != "raw",
+                                            help="Only tunable when the data is raw interface values.")
+                probe_cfg = dataclasses.replace(
+                    r.current.config, compdev=probe_cd, compressing=True,
+                    excdev=probe_exc if run_opts.input_mode == "raw" else r.current.config.excdev)
+                probe = evaluate_config(s, probe_cfg, run_opts, noise=r.noise)
+
+                cols_cmp = [("Now", r.current)]
+                if base.recommended is not None and base.changes:
+                    cols_cmp.append(("Proposal", base.recommended))
+                cols_cmp.append(("Probe", probe))
+
+                def cell(ev, kind):
+                    if kind == "ret":
+                        cls = "ok" if ev.score.retention >= run_opts.target else "bad"
+                        return f'<div class="{cls}">{ev.score.retention:.1%}</div>'
+                    if kind == "cd":
+                        return f"<div>{ev.config.compdev:.4g}</div>"
+                    if kind == "ev":
+                        return f"<div>{_fmt_n(ev.events_per_day)}</div>"
+                    return f"<div>{ev.score.max_error:.3g}</div>"
+
+                grid = '<div class="h k"></div>' + "".join(f'<div class="h">{n}</div>' for n, _ in cols_cmp)
+                grid += "".join(f'<div class="k">{label}</div>' + "".join(cell(ev, k) for _, ev in cols_cmp)
+                                for label, k in (("CompDev", "cd"), ("Retained", "ret"),
+                                                 ("Events/day", "ev"), ("Max error", "err")))
+                st.markdown(f'<div class="pct-compare n{len(cols_cmp)}">{grid}</div>', unsafe_allow_html=True)
+                st.write("")
+                b1, b2 = st.columns(2)
+                if b1.button("Adopt probe", key=f"adopt_{tag}", type="primary", use_container_width=True,
+                             help="Export the probe value instead of the proposal."):
+                    ss.adopted[tag] = probe
+                    ss.export_choice[tag] = True
+                    ss.table_v += 1
+                    st.rerun()
+                if tag in ss.adopted and b2.button("Undo", key=f"undo_{tag}", use_container_width=True):
+                    del ss.adopted[tag]
+                    ss.export_choice.pop(tag, None)
+                    ss.table_v += 1
+                    st.rerun()
 
         with left:
-            # Trade-off curve: what each CompDev costs in volume and buys in retention.
             tc = go.Figure()
+            tc.add_hrect(y0=run_opts.target * 100, y1=101, fillcolor=INK["proposal"], opacity=0.05, line_width=0)
+            tc.add_hline(y=run_opts.target * 100, line=dict(color=INK["proposal"], dash="dot", width=1))
             tc.add_scatter(x=[e.events_per_day for e in curve], y=[100 * e.score.retention for e in curve],
-                           mode="lines+markers", name="CompDev sweep", line=dict(color=INK["input"]),
-                           marker=dict(size=5), text=[f"CompDev {e.config.compdev:.4g}" for e in curve],
-                           hovertemplate="%{text}<br>%{x:,.0f} events/day<br>%{y:.1f}%<extra></extra>")
-            marks = [("Now", r.current, INK["now"], "circle")]
-            if base.recommended is not None and base.changes:
-                marks.append(("Proposal", base.recommended, INK["proposal"], "diamond"))
-            marks.append(("Probe", probe, INK["probe"], "star"))
-            for name, ev, color, sym in marks:
+                           mode="lines+markers", name="CompDev sweep", line=dict(color=INK["input"], width=2, shape="spline"),
+                           marker=dict(size=5, color=INK["input"]), customdata=[e.config.compdev for e in curve],
+                           hovertemplate="CompDev %{customdata:.4g}<br>%{x:,.0f} events/day<br>%{y:.1f}%<extra></extra>")
+            for name, ev, color, sym, size in [("Now", r.current, INK["now"], "circle", 13),
+                                               *([("Proposal", base.recommended, INK["proposal"], "diamond", 14)]
+                                                 if base.recommended is not None and base.changes else []),
+                                               ("Probe", probe, INK["probe"], "star", 16)]:
                 tc.add_scatter(x=[ev.events_per_day], y=[100 * ev.score.retention], mode="markers", name=name,
-                               marker=dict(size=14, color=color, symbol=sym, line=dict(width=1, color="white")),
-                               hovertemplate=f"{name}: CompDev {ev.config.compdev:.4g}<br>%{{x:,.0f}} events/day"
-                                             "<br>%{y:.1f}%<extra></extra>")
-            tc.add_hline(y=run_opts.target * 100, line=dict(color=INK["input"], dash="dash", width=1))
-            tc.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10), legend=dict(orientation="h", y=-0.3),
-                             xaxis=dict(type="log", title="Archive events per day (log)"),
-                             yaxis=dict(title="Retention, %", range=[-2, 102]))
-            st.plotly_chart(tc, use_container_width=True)
+                               marker=dict(size=size, color=color, symbol=sym, line=dict(width=1.5, color="white")),
+                               hovertemplate=f"<b>{name}</b> · CompDev {ev.config.compdev:.4g}<br>"
+                                             "%{x:,.0f} events/day<br>%{y:.1f}%<extra></extra>")
+            style.plot_layout(tc, 330, xaxis=dict(type="log", title="Archive events per day (log scale)"),
+                              yaxis=dict(title="Retention (%)", range=[-3, 103]))
+            st.plotly_chart(tc, use_container_width=True, config=PLOT_CONFIG)
 
-        # Trend with a residual strip: where the probe's archive departs from the input beyond the noise band.
         def archive_of(cfg):
             sim = simulate_archive(s, cfg, apply_exception=run_opts.input_mode == "raw")
             vis = sim.visible()
@@ -337,42 +382,50 @@ with tab_bench:
         def ts(t):
             return pd.to_datetime(t, unit="s", utc=True)
 
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.04)
+        st.markdown(style.section("Trend"), unsafe_allow_html=True)
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.78, 0.22], vertical_spacing=0.05)
         et, ev = envelope(s.t, s.v, 3000)
         fig.add_scatter(x=ts(et), y=ev, name="Input", line=dict(color=INK["input"], width=1), row=1, col=1)
         nt, nv = envelope(*archive_of(r.current.config), 3000)
-        fig.add_scatter(x=ts(nt), y=nv, name="Archive now", line=dict(color=INK["now"], width=1.2), row=1, col=1)
+        fig.add_scatter(x=ts(nt), y=nv, name="Archive now", line=dict(color=INK["now"], width=1.3), row=1, col=1)
         pt, pv = archive_of(probe_cfg)
-        fig.add_scatter(x=ts(pt), y=pv, name=f"Archive at probe (CompDev {probe_cd:.4g})", mode="lines+markers",
-                        marker=dict(size=4), line=dict(color=INK["probe"], width=1.8), row=1, col=1)
+        fig.add_scatter(x=ts(pt), y=pv, name="Archive at probe", mode="lines+markers",
+                        marker=dict(size=4, color=INK["probe"]), line=dict(color=INK["probe"], width=1.8), row=1, col=1)
         excess = np.maximum(0, np.abs(s.v - reconstruct(pt, pv, s.t, probe_cfg.step)) - run_opts.noise_band * r.noise)
-        xt, xv = envelope(s.t, excess, 3000)
-        fig.add_scatter(x=ts(xt), y=xv, name="Error beyond noise", fill="tozeroy",
+        xt, xv = envelope(s.t, excess, 1500)
+        fig.add_scatter(x=ts(xt), y=xv, name="Detail lost", fill="tozeroy", fillcolor="rgba(208,87,74,0.25)",
                         line=dict(color=INK["loss"], width=1), row=2, col=1)
+        style.plot_layout(fig, 500, hovermode="x unified")
         fig.update_yaxes(title_text="Value", row=1, col=1)
         fig.update_yaxes(title_text="Lost", row=2, col=1, rangemode="tozero")
-        fig.update_layout(height=520, margin=dict(l=10, r=10, t=10, b=10), legend=dict(orientation="h", y=1.06),
-                          hovermode="x unified")
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption("The red strip shows how far the probe's archive strays from the input beyond the noise band. "
-                   "A flat strip means no real detail is lost. Drag on the chart to zoom.")
+        st.plotly_chart(fig, use_container_width=True, config=PLOT_CONFIG)
+        st.markdown('<p class="pct-note">The lower strip is how far the probe\'s archive strays from the input beyond '
+                    "the noise band. Flat means no real detail is lost. Drag across the chart to zoom; double-click to reset.</p>",
+                    unsafe_allow_html=True)
 
 # --- Export ---------------------------------------------------------------
 
 with tab_export:
-    server_name = st.text_input("Data Archive name for the PI Builder Parent column", ss.get("pi_server", ""), key="parent")
     selected = {t for t, on in ss.export_choice.items() if on} | {
         r.tag for r in results if r.tag not in ss.export_choice and r.changes and (r.ready_to_export or r.tag in ss.adopted)}
-    pib = pibuilder_frame(results, server=server_name, include_excdev=run_opts.input_mode == "raw", selected=selected)
-    st.markdown(f"The PI Builder sheet has **{len(pib)}** changed points, **{(pib['Selected(x)'] == 'x').sum()}** "
-                "of them selected. Unselected rows stay in the sheet for one-at-a-time review.")
-    st.dataframe(pib, hide_index=True, use_container_width=True)
-    d1, d2, d3 = st.columns(3)
-    d1.download_button("PI Builder sheet (CSV)", pib.to_csv(index=False, float_format="%.6g"), "pibuilder.csv",
-                       "text/csv", type="primary", use_container_width=True)
-    d2.download_button("Results table (CSV)", results_frame(results).to_csv(index=False, float_format="%.6g"),
-                       "results.csv", "text/csv", use_container_width=True)
-    with tempfile.TemporaryDirectory() as d:
-        write_report(results, ss.series, run_opts, Path(d) / "report.html")
-        d3.download_button("Report (HTML)", (Path(d) / "report.html").read_bytes(), "report.html", "text/html",
-                           use_container_width=True)
+    left, right = st.columns([5, 12], gap="large")
+    with left:
+        server_name = st.text_input("Data Archive (PI Builder Parent column)", ss.get("pi_server", ""), key="parent")
+        pib = pibuilder_frame(results, server=server_name, include_excdev=run_opts.input_mode == "raw", selected=selected)
+        n_sel = int((pib["Selected(x)"] == "x").sum())
+        st.markdown(style.kpis([("Changed points", f"{len(pib)}", "rows in the sheet"),
+                                ("Selected", f"{n_sel}", "marked x for publishing")]), unsafe_allow_html=True)
+        st.download_button("Download PI Builder sheet", pib.to_csv(index=False, float_format="%.6g"), "pibuilder.csv",
+                           "text/csv", type="primary", use_container_width=True)
+        st.download_button("Download results table", results_frame(results).to_csv(index=False, float_format="%.6g"),
+                           "results.csv", "text/csv", use_container_width=True)
+        with tempfile.TemporaryDirectory() as d:
+            write_report(results, ss.series, run_opts, Path(d) / "report.html")
+            st.download_button("Download HTML report", (Path(d) / "report.html").read_bytes(), "report.html",
+                               "text/html", use_container_width=True)
+    with right:
+        st.markdown(style.section("PI Builder sheet preview"), unsafe_allow_html=True)
+        st.dataframe(pib.astype(object).where(pib.notna(), ""), hide_index=True, use_container_width=True)
+        st.markdown(f'<p class="pct-note">The PI Builder sheet has <b>{len(pib)}</b> changed points, <b>{n_sel}</b> of them '
+                    "selected. Unselected rows stay in the sheet so you can review them one at a time. "
+                    "Open it in Excel with PI Builder and publish when you're satisfied.</p>", unsafe_allow_html=True)

@@ -21,8 +21,8 @@ def _loaded_and_run():
 
 def test_demo_workflow_produces_recommendations():
     at = _loaded_and_run()
-    assert at.title[0].value == "PI Compression Tuner"
-    assert any(m.label == "Points" and m.value == "4" for m in at.metric)
+    text = " ".join(m.value for m in at.markdown)
+    assert "PI Compression Tuner" in text and "Proposed changes" in text
     assert [t.label for t in at.tabs] == ["Overview", "Workbench", "Export"]
     assert any("PI Builder sheet has" in m.value for m in at.markdown)
 
@@ -33,7 +33,7 @@ def test_probe_value_can_be_adopted():
     at.number_input(key="cd_DEMO.TEMP.PV").set_value(0.1).run()
     at.button(key="adopt_DEMO.TEMP.PV").click().run()
     assert not at.exception, at.exception
-    assert any("CompDev adopted in the workbench" in c.value for c in at.caption)
+    assert any("CompDev adopted in the workbench" in m.value for m in at.markdown)
 
 
 def test_pi_errors_are_shown_not_raised():

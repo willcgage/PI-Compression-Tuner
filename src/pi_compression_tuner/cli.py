@@ -210,7 +210,8 @@ def ui(port, host):
     raise SystemExit(subprocess.call([sys.executable, "-m", "streamlit", "run", str(app),
                                       "--server.port", str(port), "--server.address", host,
                                       "--browser.gatherUsageStats", "false", "--client.toolbarMode", "minimal",
-                                      "--theme.primaryColor", "#13708a", "--theme.base", "light"]))
+                                      "--theme.base", "light", "--theme.primaryColor", "#13708a",
+                                      "--theme.textColor", "#17222a", "--theme.secondaryBackgroundColor", "#f4f7f8"]))
 
 
 if __name__ == "__main__":
