@@ -33,7 +33,14 @@ class TuneOptions:
       * ``"snapshot"``: the snapshot stream, already filtered by the interface's exception
         reporting. Only compression is simulated and ExcDev is left as configured.
       * ``"raw"``: every value the interface read, before exception. Both stages are
-        simulated and ExcDev is recommended as ``excdev_ratio`` x CompDev.
+        simulated and ExcDev is tuned with CompDev. ExcDev is ``excdev_ratio`` x CompDev; when
+        ``excdev_ratio`` is None, each ratio in ``excdev_ratios`` is tried and the one that
+        meets the target with the fewest archive events wins. ExcDev is never set below
+        ``excdev_noise_floor`` x the measured noise (capped at CompDev), so the interface
+        does not pass noise.
+
+    ``robust_margin``: a refined CompDev is kept only if a setting this much tighter also
+    meets the target, so a proposal never sits in a narrow passing pocket of a bumpy score.
     """
 
     target: float = 0.95
@@ -41,7 +48,10 @@ class TuneOptions:
     window_s: float = 3600.0
     percentile: float = 10.0
     noise_band: float = 2.0
-    excdev_ratio: float = 0.5
+    excdev_ratio: float | None = None
+    excdev_ratios: tuple = (0.1, 0.25, 0.5, 0.75, 1.0)
+    excdev_noise_floor: float = 1.0
+    robust_margin: float = 0.9
     max_error: float | None = None           # engineering units
     max_error_pct_span: float | None = None  # percent of span
     under_ratio: float = 2.0
@@ -65,6 +75,11 @@ class Evaluation:
     events_per_day: float
     archive_ratio: float  # archived events / input events
     score: Score
+
+    @property
+    def compression_ratio(self) -> float:
+        """Input events per archived event, the usual compression ratio in the literature."""
+        return 1.0 / self.archive_ratio if self.archive_ratio > 0 else math.inf
 
 
 @dataclass
@@ -128,11 +143,12 @@ def evaluate_config(series: Series, config: PointConfig, opts: TuneOptions = Tun
 
 
 def tradeoff_curve(series: Series, current: PointConfig, opts: TuneOptions = TuneOptions(), noise: float | None = None,
-                   points: int = 18) -> list[Evaluation]:
+                   points: int = 18, excdev_ratio: float | None = None) -> list[Evaluation]:
     """Retention and archive volume across a log-spaced sweep of CompDev, for plotting the trade-off.
 
     The sweep runs from a quarter of the noise to 40 times it (or to 5% of span, if larger),
-    with ExcDev handled as in :func:`tune_point`.
+    with ExcDev handled as in :func:`tune_point`. In raw mode ExcDev follows ``excdev_ratio``
+    (pass the proposal's ratio), else ``opts.excdev_ratio``, else 0.5.
     """
     if noise is None:
         noise = estimate_noise(series.v)
@@ -141,11 +157,17 @@ def tradeoff_curve(series: Series, current: PointConfig, opts: TuneOptions = Tun
     hi = max(40 * noise, 0.05 * current.span if current.span > 0 else 0)
     lo = max(0.25 * noise, current.excdev if opts.input_mode == "snapshot" else 0)
     evaluate = _Evaluator(series, opts, noise, current.step)
+    ratio = excdev_ratio if excdev_ratio is not None else (opts.excdev_ratio if opts.excdev_ratio is not None else 0.5)
     out = []
     for c in np.geomspace(max(lo, 1e-12), max(hi, lo * 1.01), points):
-        excdev = opts.excdev_ratio * c if opts.input_mode == "raw" else current.excdev
+        excdev = _raw_excdev(float(c), ratio, noise, opts) if opts.input_mode == "raw" else current.excdev
         out.append(evaluate(replace(current, excdev=excdev, compdev=float(c), compressing=True)))
     return out
+
+
+def _raw_excdev(compdev: float, ratio: float, noise: float, opts: TuneOptions) -> float:
+    """ExcDev for a raw-mode candidate: ratio x CompDev, at least the noise floor, at most CompDev."""
+    return min(max(ratio * compdev, opts.excdev_noise_floor * noise), compdev)
 
 
 def _error_limit(opts: TuneOptions, span: float) -> float:
@@ -186,17 +208,27 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
     if not cands:
         cands = [max(lo_bound, noise)]
 
-    def config_for(compdev: float) -> PointConfig:
-        excdev = opts.excdev_ratio * compdev if opts.input_mode == "raw" else current.excdev
-        return replace(current, excdev=excdev, compdev=compdev, compressing=True)
+    def search(ratio: float | None):
+        """Loosest robust CompDev that meets the target at one ExcDev ratio.
 
-    evals = [(c, evaluate(config_for(c))) for c in cands]
-    ok = [i for i, (_, ev) in enumerate(evals) if feasible(ev)]
+        Returns (evaluation or None, CompDev of a looser passing setting beyond a failing gap or None).
+        """
+        def config_for(compdev: float) -> PointConfig:
+            excdev = _raw_excdev(compdev, ratio, noise, opts) if opts.input_mode == "raw" else current.excdev
+            return replace(current, excdev=excdev, compdev=compdev, compressing=True)
 
-    recommended = None
-    if ok:
-        best = max(ok)
-        lo_c, lo_ev = evals[best]
+        evals = [(c, evaluate(config_for(c))) for c in cands]
+        passing = [feasible(ev) for _, ev in evals]
+        if not any(passing):
+            return None, None
+        # The score is not always smooth in CompDev, so stay in the first passing run of the
+        # grid and only report passing settings beyond a failing gap.
+        best = passing.index(True)
+        while best + 1 < len(evals) and passing[best + 1]:
+            best += 1
+        beyond = [c for (c, _), ok in zip(evals[best + 1:], passing[best + 1:]) if ok]
+        grid_c, grid_ev = evals[best]
+        lo_c, lo_ev = grid_c, grid_ev
         if best + 1 < len(evals):
             hi_c = evals[best + 1][0]
             for _ in range(opts.refine_steps):
@@ -206,19 +238,39 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
                     lo_c, lo_ev = mid, ev
                 else:
                     hi_c = mid
+            # Keep the refined value only if a slightly tighter setting passes too.
+            if lo_c != grid_c and opts.robust_margin * lo_c > grid_c \
+                    and not feasible(evaluate(config_for(opts.robust_margin * lo_c))):
+                lo_c, lo_ev = grid_c, grid_ev
         # Round to a readable value, but only keep it if it still meets the target.
-        recommended = lo_ev
+        found = lo_ev
         for sig in (2, 3):
             rc = _floor_sig(lo_c, sig)
             if rc <= 0 or rc == lo_c:
                 break
             cfg = config_for(rc)
             if opts.input_mode == "raw":
-                cfg = cfg.with_deviations(_round_sig(cfg.excdev, sig), rc)
+                cfg = cfg.with_deviations(min(_round_sig(cfg.excdev, sig), rc), rc)
             ev = evaluate(cfg)
             if feasible(ev):
-                recommended = ev
+                found = ev
                 break
+        return found, (max(beyond) if beyond else None)
+
+    if opts.input_mode == "raw":
+        ratios = (opts.excdev_ratio,) if opts.excdev_ratio is not None else opts.excdev_ratios
+    else:
+        ratios = (None,)
+    recommended, beyond, best_ratio = None, None, None
+    for ratio in ratios:
+        ev, bey = search(ratio)
+        if ev is not None and (recommended is None
+                               or (ev.archived_events, -ev.score.retention)
+                               < (recommended.archived_events, -recommended.score.retention)):
+            recommended, beyond, best_ratio = ev, bey, ratio
+    if beyond is not None:
+        notes.append(f"The score is not smooth for this point: CompDev {beyond:.3g} also meets the target, "
+                     "but settings between it and the proposal do not, so the proposal stays below that gap.")
 
     zero_span_issue = current.span <= 0
     if current.span > 0:
@@ -251,6 +303,15 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
         notes.append("Scored against the snapshot stream, so ExcDev was not tuned.")
         if recommended is not None and recommended.config.compdev < 2 * current.excdev:
             notes.append("Recommended CompDev is under twice ExcDev; a raw capture could show whether ExcDev should come down too.")
+    if opts.input_mode == "raw" and recommended is not None and recommended is not current_eval:
+        if len(ratios) > 1:
+            notes.append(f"ExcDev and CompDev were tuned together; ExcDev at {best_ratio:g} × CompDev "
+                         "kept the fewest events.")
+        if recommended.config.excdev > best_ratio * recommended.config.compdev * 1.001:
+            notes.append(f"ExcDev was raised to the measured noise ({noise:.3g}) so the interface does not pass noise.")
+    if opts.input_mode == "raw" and current.excdev < 0.5 * noise:
+        notes.append(f"Current ExcDev ({current.excdev:g}) is under half the measured noise ({noise:.3g}), "
+                     "so the interface passes noise on to the server.")
     if not current.compressing:
         notes.append("Compression is currently off for this point.")
 

@@ -59,6 +59,13 @@ def attr_rows(now: PointConfig, new: PointConfig | None) -> list[tuple]:
     return rows
 
 
+def fmt_ratio(x: float) -> str:
+    """A compression ratio (input events per archived event) for display."""
+    if not np.isfinite(x):
+        return "∞"
+    return f"{x:,.0f}" if x >= 10 else f"{x:.1f}"
+
+
 def signal_profile(r: TuneResult, s: Series, cfg: PointConfig) -> list[tuple[str, str]]:
     days = max(s.duration, 1) / 86400
     dt = np.diff(s.t)
@@ -121,11 +128,13 @@ def outcome_cards(r: TuneResult, target: float, span: float, colors: dict) -> li
     err_sub = f"{new.score.max_error / r.noise:.1f}× noise σ" if r.noise else ""
     if span > 0:
         err_sub += f" · {100 * new.score.max_error / span:.2g}% of span"
+    err_sub += f" · RMS {new.score.rms_error:.3g}"
     yearly = new.events_per_day * 365
     return [
         dict(label="Archive events per day", value=fmt_count(new.events_per_day),
              delta=(fmt_change(cut), "good" if cut <= 0 else "warn") if prop else None,
-             sub=f"from {fmt_count(cur.events_per_day)} today" if prop else "unchanged",
+             sub=(f"from {fmt_count(cur.events_per_day)} today" if prop else "unchanged")
+             + f" · keeps 1 in {fmt_ratio(new.compression_ratio)}",
              bars=pair(frac(cur.events_per_day), frac(new.events_per_day))),
         dict(label="Retention", value=f"{new.score.retention:.1%}",
              delta=("meets target", "good") if ok else ("below target", "warn"),
