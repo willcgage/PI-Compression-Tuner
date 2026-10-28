@@ -56,6 +56,17 @@ pip install -e ".[ui,kerberos,afsdk]"   # ui: the web UI; kerberos: Windows sign
 pip install -e ".[dev]" && pytest        # development
 ```
 
+### Offline Windows bundle
+
+For a machine on the PI network with no internet access or admin rights, build a self-contained zip that carries its own Python and every dependency (including pythonnet and Windows sign-in):
+
+```bash
+pip install uv build
+python packaging/build_windows_bundle.py   # writes dist/PI-Compression-Tuner-<version>-win64.zip
+```
+
+It builds on Linux or Windows. The **Windows bundle** workflow builds it on each push, tests it on a clean Windows machine and keeps the zip as a run artifact. Unzip it on the target and follow `START-HERE.txt`: run the self-test, then `pict pi check`, then try real points.
+
 ## The UI
 
 ```bash
@@ -95,6 +106,9 @@ pict analyze demo/data.csv --config demo/config.csv --mode raw --out demo/out
 By default, every `pict pi` command (and the UI) tries the **PI Web API** first. If the Web API is unreachable, refuses the credentials, or can't find the server, it falls back to **AF SDK**, and says which source it used and why. To force one source, pass `--source webapi` or `--source afsdk`.
 
 ```bash
+# 0. Check each source on its own and report what works
+pict pi check --server PISRV --url https://pihost/piwebapi --tag SINUSOID
+
 # 1. Triage: rank points by archive events
 pict pi triage --server PISRV --url https://pihost/piwebapi --filter "FIC*" --start "*-1d"
 

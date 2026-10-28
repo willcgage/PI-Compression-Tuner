@@ -1,0 +1,72 @@
+name: Windows bundle
+
+# Builds the offline Windows bundle and tests it on a clean Windows machine:
+# the self-test, a PI check against no server (it must fail cleanly), and the UI.
+on:
+  push:
+    paths:
+      - "src/**"
+      - "packaging/**"
+      - "pyproject.toml"
+      - ".github/workflows/windows-bundle.yml"
+  workflow_dispatch:
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Build
+        run: |
+          python -m pip install uv build
+          python packaging/build_windows_bundle.py
+
+      - name: Unpack where a site would
+        shell: pwsh
+        run: |
+          Expand-Archive dist\*.zip -DestinationPath C:\PICT
+          Get-ChildItem C:\PICT
+
+      - name: Self-test
+        shell: cmd
+        env:
+          PICT_QUIET: "1"
+          PICT_WORK: C:\pict-work
+        run: |
+          for /d %%d in (C:\PICT\PI-Compression-Tuner-*) do call "%%d\Run self-test.cmd"
+
+      - name: PI check with no server fails cleanly
+        shell: pwsh
+        run: |
+          $pict = (Get-ChildItem C:\PICT\PI-Compression-Tuner-*\pict.cmd).FullName
+          $out = & $pict pi check --server NOSUCHSERVER --url https://127.0.0.1:9/piwebapi 2>&1 | Out-String
+          $out
+          if ($LASTEXITCODE -ne 1) { throw "expected exit code 1, got $LASTEXITCODE" }
+          if ($out -notmatch "PI Web API: failed" -or $out -notmatch "AF SDK: failed") { throw "missing per-source report" }
+
+      - name: UI starts and answers
+        shell: pwsh
+        run: |
+          $pict = (Get-ChildItem C:\PICT\PI-Compression-Tuner-*\pict.cmd).FullName
+          $p = Start-Process -FilePath $pict -ArgumentList "ui","--port","8599" -PassThru -NoNewWindow
+          $ok = $false
+          foreach ($i in 1..60) {
+            Start-Sleep -Seconds 2
+            try { if ((Invoke-WebRequest http://localhost:8599/_stcore/health -UseBasicParsing).Content -eq "ok") { $ok = $true; break } } catch {}
+          }
+          Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "streamlit" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+          if (-not $ok) { throw "the UI did not answer on port 8599" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PI-Compression-Tuner-win64
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          compression-level: 0
+          retention-days: 30

@@ -126,6 +126,42 @@ def pi():
 
 @pi.command()
 @_pi_options
+@click.option("--filter", "name_filter", default="*", show_default=True, help="Tag name filter for the sample lookup.")
+@click.option("--tag", help="A tag to read settings and a day's archive event count for.")
+def check(server, source, url, auth, ca_bundle, insecure, afsdk_dir, name_filter, tag):
+    """Test each PI source on its own and report what works. Reads only."""
+    from .sources.afsdk import AFSDK
+    from .sources.piwebapi import PIWebAPI
+    verify = False if insecure else (ca_bundle or True)
+    tries = []
+    if source in ("auto", "webapi"):
+        if url:
+            tries.append(("PI Web API", lambda: PIWebAPI(url, auth=auth, verify=verify)))
+        else:
+            click.echo("PI Web API: skipped, no --url given.")
+    if source in ("auto", "afsdk"):
+        tries.append(("AF SDK", lambda: AFSDK(afsdk_dir)))
+    working = 0
+    for label, make in tries:
+        try:
+            src = make()
+            src.check(server)
+            names = [r.name for r in src.find_points(server, name_filter, max_count=5)]
+            click.echo(f"{label}: OK. Found {server}; sample points matching {name_filter!r}: {', '.join(names) or 'none'}.")
+            if tag:
+                ref = src.point(server, tag)
+                a = src.attributes(ref)
+                settings = ", ".join(f"{k}={a.get(k.lower())}" for k in ("ExcDev", "CompDev", "Compressing", "Span", "PointType"))
+                click.echo(f"  {tag}: {settings}; {src.event_count(ref, '*-1d', '*')} archive events in the last day.")
+            working += 1
+        except Exception as e:  # report every failure, then carry on to the next source
+            click.echo(f"{label}: failed ({type(e).__name__}: {e})")
+    if not working:
+        raise SystemExit(1)
+
+
+@pi.command()
+@_pi_options
 @click.option("--filter", "name_filter", default="*", show_default=True, help="Tag name filter.")
 @click.option("--start", default="*-1d", show_default=True)
 @click.option("--end", default="*", show_default=True)
@@ -210,7 +246,8 @@ def ui(port, host):
     app = Path(__file__).parent / "ui" / "app.py"
     raise SystemExit(subprocess.call([sys.executable, "-m", "streamlit", "run", str(app),
                                       "--server.port", str(port), "--server.address", host,
-                                      "--browser.gatherUsageStats", "false", "--client.toolbarMode", "minimal",
+                                      "--browser.gatherUsageStats", "false", "--server.showEmailPrompt", "false",
+                                      "--client.toolbarMode", "minimal",
                                       "--theme.base", "light", "--theme.primaryColor", "#13708a",
                                       "--theme.textColor", "#17222a", "--theme.secondaryBackgroundColor", "#f4f7f8"]))
 
