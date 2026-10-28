@@ -1,4 +1,4 @@
-"""Recommend PI Point exception and compression settings from observed signal behaviour."""
+"""Recommend PI Point exception and compression settings from observed signal behavior."""
 
 from .models import PointConfig, Series
 from .simulate import exception_filter, swinging_door, simulate_archive

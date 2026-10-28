@@ -10,7 +10,7 @@ START = 1767225600.0  # 2026-01-01T00:00:00Z
 
 
 def demo_data(days: float = 3, seed: int = 1, step_s: float = 5.0) -> tuple[dict[str, Series], dict[str, PointConfig]]:
-    """Four points with different behaviour and deliberately poor settings, sampled every ``step_s`` seconds."""
+    """Four points with different behavior and deliberately poor settings, sampled every ``step_s`` seconds."""
     rng = np.random.default_rng(seed)
     t = np.arange(0, days * 86400, step_s)
     n = len(t)

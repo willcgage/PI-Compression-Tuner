@@ -163,7 +163,7 @@ def write_report(results: list[TuneResult], series: dict[str, Series], opts: Tun
     counts = Counter(r.classification for r in results)
     cur_total = sum(r.current.events_per_day for r in results if r.current)
     rec_total = sum((r.recommended or r.current).events_per_day for r in results if r.current)
-    tiles = [f'<div class="tile"><b>{len(results)}</b>points analysed</div>']
+    tiles = [f'<div class="tile"><b>{len(results)}</b>points analyzed</div>']
     for c in Classification:
         if counts.get(c):
             tiles.append(f'<div class="tile {_CLASS_STYLE[c]}"><b>{counts[c]}</b>{c.value}</div>')

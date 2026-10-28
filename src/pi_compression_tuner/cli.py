@@ -47,7 +47,7 @@ def main():
 @click.option("--server", default="", help="Data Archive name to put in the PI Builder Parent column.")
 @click.option("--out", "out_dir", type=click.Path(file_okay=False), default="out", show_default=True)
 def analyze(data, config_path, mode, target, window, percentile, max_error, max_error_pct_span, excdev_ratio, server, out_dir):
-    """Analyse DATA (CSV) and write results.csv, pibuilder.csv and report.html."""
+    """Analyze DATA (CSV) and write results.csv, pibuilder.csv and report.html."""
     series = read_series(data)
     configs = read_configs(config_path) if config_path else {}
     opts = TuneOptions(target=target, input_mode=mode, window_s=_duration(window), percentile=percentile,
