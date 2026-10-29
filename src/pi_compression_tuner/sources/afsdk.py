@@ -167,15 +167,16 @@ class AFSDK:
         pipe.AddSignups(pts)
         events: dict[str, list] = {r.name: [] for r in refs}
         deadline = time.monotonic() + duration_s
+        batch = 10000
         try:
             while True:
-                more = True
-                while more:
-                    res = pipe.GetUpdateEvents(5000)
-                    for ev in res.Results:
+                while True:  # drain the pipe: a full batch means more events are waiting
+                    res = list(pipe.GetUpdateEvents(batch))
+                    for ev in res:
                         if str(ev.Action) in ("Add", "Update"):
                             events.setdefault(ev.Value.PIPoint.Name, []).append(ev.Value)
-                    more = bool(getattr(res, "HasMoreEvents", False))
+                    if len(res) < batch:
+                        break
                 if on_poll:
                     on_poll({k: len(v) for k, v in events.items()})
                 if time.monotonic() >= deadline:
@@ -184,5 +185,6 @@ class AFSDK:
         except KeyboardInterrupt:
             pass
         finally:
+            pipe.Close()  # removes the signups, as in AVEVA's AF SDK course (Exercise 5)
             pipe.Dispose()
         return {k: _series(v) for k, v in events.items()}
