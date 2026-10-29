@@ -66,6 +66,15 @@ jobs:
           Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "streamlit" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
           if (-not $ok) { throw "the UI did not answer on port 8599" }
 
+      - name: Self-test spots an incomplete install
+        shell: pwsh
+        run: |
+          $dir = (Get-ChildItem C:\PICT\PI-Compression-Tuner-*).FullName
+          Remove-Item "$dir\python\Lib\site-packages\pi_compression_tuner\settings.py"
+          & "$dir\python\python.exe" -s "$dir\check_components.py" --install-only
+          if ($LASTEXITCODE -ne 1) { throw "a missing file went unnoticed" }
+          exit 0
+
       - uses: actions/upload-artifact@v4
         with:
           name: PI-Compression-Tuner-win64

@@ -27,6 +27,15 @@ Requirements
    (Deep folders can hit Windows' 260-character path limit.)
    You should then have C:\PICT\PI-Compression-Tuner-<version>-win64\ with this file in it.
 
+To update to a newer bundle, delete the old folder and unzip the new zip into a new,
+empty folder. Don't unzip over an old copy: leftover files can mix the two versions.
+Your work folder and saved connection are kept. The self-test checks that every file
+of the bundle is present and shows which build you have.
+
+If the self-test reports missing files, the download or the extract was incomplete.
+Compare the zip's checksum with the .sha256 file from the release:
+    certutil -hashfile PI-Compression-Tuner-<version>-win64.zip SHA256
+
 To uninstall, delete that folder and the work folder below.
 
 

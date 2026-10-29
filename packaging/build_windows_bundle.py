@@ -22,6 +22,7 @@ import sys
 import tomllib
 import urllib.request
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -93,6 +94,19 @@ def main() -> None:
         newline = "\r\n" if f.suffix in (".cmd", ".txt") else "\n"
         (bundle / f.name).write_bytes(text.replace("\n", newline).encode("utf-8"))
     shutil.copy(lock, bundle / "python" / "requirements-win64.txt")
+
+    # Build stamp and a manifest of every file, so the self-test can tell a complete,
+    # current install from a partial extract or a copy mixed with an older bundle.
+    try:
+        commit = subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"], capture_output=True,
+                                text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        commit = "unknown"
+    stamp = f"{version} build {commit} {datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC"
+    (bundle / "BUILD.txt").write_text(stamp + "\r\n", encoding="utf-8")
+    files = sorted(p for p in bundle.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+    manifest = [f"{p.stat().st_size}\t{p.relative_to(bundle).as_posix()}" for p in files]
+    (bundle / "python" / "MANIFEST.txt").write_text("\n".join(manifest) + "\n", encoding="utf-8")
 
     args.out.mkdir(parents=True, exist_ok=True)
     zpath = args.out / f"{name}.zip"
