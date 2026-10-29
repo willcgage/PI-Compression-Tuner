@@ -13,6 +13,7 @@ dependencies = [
     "pandas>=2.0",
     "click>=8.1",
     "requests>=2.31",
+    "truststore>=0.9",
 ]
 
 [project.optional-dependencies]

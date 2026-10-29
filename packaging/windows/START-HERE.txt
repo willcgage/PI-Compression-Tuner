@@ -112,8 +112,11 @@ Troubleshooting
 - "Windows protected your PC": click More info, then Run anyway, or Unblock the zip (step 1.2).
 - PI Web API 401: Kerberos sign-in was refused. Try --auth basic, or check that the
   Web API allows Kerberos/NTLM for your account.
-- SSL or certificate errors: pass --ca-bundle with your CA certificate. --insecure skips
-  the check, for a quick test only.
+- SSL or certificate errors: the tuner trusts the same certificates Windows does (the
+  ones your browser accepts). If the PI Web API page opens in the browser without a
+  warning but the tuner still fails, export the site's root CA as a Base-64 (PEM) file
+  and pass it with --ca-bundle, or save it once with pict pi config --ca-bundle FILE.
+  --insecure skips the check, for a quick test only.
 - AF SDK not found: install PI AF Client, or pass --afsdk-dir. The server must be in
   this machine's known servers table (open PI System Explorer or PI SMT once to add it).
 - The UI does not open: browse to http://localhost:8501 yourself. If port 8501 is taken,

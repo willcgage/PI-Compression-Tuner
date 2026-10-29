@@ -197,8 +197,8 @@ with st.sidebar:
         with st.form("pi_search_form", border=False):
             st.text_input("Search tag names", placeholder="FIC or FIC1*", key="pi_search",
                           help="A word matches anywhere in the name. Use * and ? for PI's own name filter.")
-            go = st.form_submit_button("Search PI", key="pi_search_go", use_container_width=True)
-        if go:
+            search_clicked = st.form_submit_button("Search PI", key="pi_search_go", use_container_width=True)
+        if search_clicked:
             if not (server.strip() and ss.pi_search.strip()):
                 st.warning("Enter the Data Archive and a search first.")
             else:

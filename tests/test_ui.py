@@ -98,6 +98,9 @@ def test_search_pick_and_read_from_pi(monkeypatch):
     at.button(key="load_pi").click().run()
     assert not at.exception and not at.error, (at.exception, at.error)
     assert set(at.session_state["series"]) == {"DEMO.TEMP.PV", "DEMO.FLOW.PV", "DEMO.PRESS.PV", "DEMO.LEVEL.PV"}
+    at.button(key="run").click().run()  # tuning and every tab must render with the PI panel showing
+    assert not at.exception, at.exception
+    assert any("Proposed changes" in m.value for m in at.markdown)
 
 
 def test_pi_fields_start_from_saved_settings(tmp_path, monkeypatch):
