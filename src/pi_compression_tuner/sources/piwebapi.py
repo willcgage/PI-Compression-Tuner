@@ -62,8 +62,10 @@ class PIWebAPI:
         page = min(max_count, 1000)
         while len(out) < max_count:
             items = self._get(f"dataservers/{ds}/points", nameFilter=name_filter, startIndex=start, maxCount=page,
-                              selectedFields="Items.Name;Items.WebId;Items.Path").get("Items", [])
-            out += [PointRef(i["Name"], i["WebId"], i.get("Path", "")) for i in items]
+                              selectedFields="Items.Name;Items.WebId;Items.Path;Items.Descriptor;Items.EngineeringUnits"
+                              ).get("Items", [])
+            out += [PointRef(i["Name"], i["WebId"], i.get("Path", ""), i.get("Descriptor") or "",
+                             i.get("EngineeringUnits") or "") for i in items]
             if len(items) < page:
                 break
             start += page

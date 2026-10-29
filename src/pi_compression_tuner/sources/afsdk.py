@@ -97,8 +97,8 @@ class AFSDK:
     def _pt(self, ref: PointRef):
         return self._points[ref.path]
 
-    def _ref(self, server: str, pt) -> PointRef:
-        ref = PointRef(pt.Name, "", f"\\\\{server}\\{pt.Name}")
+    def _ref(self, server: str, pt, descriptor: str = "", engunits: str = "") -> PointRef:
+        ref = PointRef(pt.Name, "", f"\\\\{server}\\{pt.Name}", descriptor, engunits)
         self._points[ref.path] = pt
         return ref
 
@@ -107,9 +107,16 @@ class AFSDK:
 
     def find_points(self, server: str, name_filter: str = "*", max_count: int = 1000) -> list[PointRef]:
         PIPoint = self.sdk["PI"].PIPoint
+        names = ["descriptor", "engunits"]
+        load = None
+        if "List" in self.sdk:
+            load = self.sdk["List"][self.sdk["System"].String]()
+            for a in names:
+                load.Add(a)
         out = []
-        for pt in PIPoint.FindPIPoints(self._server(server), name_filter, None, None):
-            out.append(self._ref(server, pt))
+        for pt in PIPoint.FindPIPoints(self._server(server), name_filter, None, load):
+            desc, units = (str(pt.GetAttribute(a) or "") for a in names)
+            out.append(self._ref(server, pt, desc, units))
             if len(out) >= max_count:
                 break
         return out

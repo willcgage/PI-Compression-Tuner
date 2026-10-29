@@ -40,14 +40,19 @@ The tuner writes its files to:  Documents\PI Compression Tuner
 (set the PICT_WORK environment variable to use another folder).
 
 
-3. Check the connection to PI
------------------------------
-Double-click "PI command prompt.cmd", then run (with your names):
+3. Save the connection and check it
+-----------------------------------
+Double-click "PI command prompt.cmd", then save your connection once (with your names):
 
-    pict pi check --server PISRV --url https://pihost/piwebapi --tag SINUSOID
+    pict pi config --server PISRV --url https://pihost/piwebapi --auth anonymous
+
+Every later command, and the UI, starts from these settings, so you can leave them
+out. Run "pict pi config" on its own to see them. No passwords are stored. Then:
+
+    pict pi check --tag SINUSOID
 
 It tries the PI Web API and the AF SDK separately and reports what works and why
-anything failed. Useful options:
+anything failed. Useful options (for config, check, or any pict pi command):
     --auth basic        PI Web API basic sign-in; set PI_WEBAPI_USER and PI_WEBAPI_PASSWORD first:
                           set PI_WEBAPI_USER=DOMAIN\me
                           set PI_WEBAPI_PASSWORD=...
@@ -61,16 +66,16 @@ anything failed. Useful options:
 In the PI command prompt:
 
   a) Triage: rank points by archive events over the last day.
-       pict pi triage --server PISRV --url https://pihost/piwebapi --filter "FIC*" --start "*-1d"
+       pict pi triage --filter "FIC*" --start "*-1d"
      Writes triage.csv.
 
   b) Quick look from the archive (best for points with compression off or very tight).
-       pict pi fetch --server PISRV --url https://pihost/piwebapi --tag FIC101.PV --tag TIC204.PV --start "*-2d" --out fetch
+       pict pi fetch --tag FIC101.PV --tag TIC204.PV --start "*-2d" --out fetch
        pict analyze fetch\data.csv --config fetch\config.csv --mode snapshot --server PISRV --out results
      Open results\report.html.
 
   c) The real test: record the snapshot stream for a few hours, then analyze it.
-       pict pi record --server PISRV --url https://pihost/piwebapi --filter "FIC*" --limit 20 --duration 4h --out capture
+       pict pi record --filter "FIC*" --limit 20 --duration 4h --out capture
        pict analyze capture\data.csv --config capture\config.csv --mode snapshot --server PISRV --out results
      Ctrl+C stops recording early and keeps what was recorded. Recording changes no
      point settings; through the PI Web API it registers a stream-updates marker.
@@ -79,8 +84,10 @@ In the PI command prompt:
 5. The UI
 ---------
 Double-click "Open tuner UI.cmd". It opens http://localhost:8501 in your browser.
-Close the black window to stop it. In the sidebar, choose "PI server" and enter the
-server name and PI Web API URL, or load a capture folder's CSV files.
+Close the black window to stop it. In the sidebar, choose "PI server". The server and
+URL are filled in from your saved connection. Search tag names (a word matches
+anywhere in the name; * and ? use PI's own filter), tick the points you want in the
+table, and press Read. You can also load a capture folder's CSV files instead.
 
 
 What to send back

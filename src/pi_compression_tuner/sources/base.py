@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
 from ..models import PointConfig, Series
@@ -10,11 +10,16 @@ from ..models import PointConfig, Series
 
 @dataclass(frozen=True)
 class PointRef:
-    """A PI Point found through a source. ``web_id`` is the PI Web API WebId; AF SDK leaves it empty."""
+    """A PI Point found through a source. ``web_id`` is the PI Web API WebId; AF SDK leaves it empty.
+
+    ``descriptor`` and ``engunits`` are filled in by searches, to help pick points; they are not part of its identity.
+    """
 
     name: str
     web_id: str = ""
     path: str = ""
+    descriptor: str = field(default="", compare=False)
+    engunits: str = field(default="", compare=False)
 
 
 class PISource(Protocol):

@@ -76,7 +76,7 @@ pict ui          # opens http://localhost:8501
 1. **Load data** in the sidebar. Choose one of:
    - **Demo data**: synthetic signals, no PI needed.
    - **CSV files**: for example a `pict pi record` capture.
-   - **PI server**: reads archived values through the PI Web API, falling back to AF SDK.
+   - **PI server**: reads archived values through the PI Web API, falling back to AF SDK. The connection fields start from the saved settings (`pict pi config`), and **Save as my default connection** under Connection options updates them. Search tag names (a word matches anywhere in the name; `*` and `?` use PI's own filter), tick points in the results table, or paste a list of names.
 2. **Choose tuning settings and run.** Settings are the target retention, scoring window, error limits, and whether the data is the snapshot stream or raw interface values.
 3. **Overview tab:**
    - A map plots every point by archive events per day against retention, with arrows showing where each proposal moves it.
@@ -106,8 +106,9 @@ pict analyze demo/data.csv --config demo/config.csv --mode raw --out demo/out
 By default, every `pict pi` command (and the UI) tries the **PI Web API** first. If the Web API is unreachable, refuses the credentials, or can't find the server, it falls back to **AF SDK**, and says which source it used and why. To force one source, pass `--source webapi` or `--source afsdk`.
 
 ```bash
-# 0. Check each source on its own and report what works
-pict pi check --server PISRV --url https://pihost/piwebapi --tag SINUSOID
+# 0. Save the connection once (no passwords are stored), then check each source on its own
+pict pi config --server PISRV --url https://pihost/piwebapi --auth anonymous
+pict pi check --tag SINUSOID
 
 # 1. Triage: rank points by archive events
 pict pi triage --server PISRV --url https://pihost/piwebapi --filter "FIC*" --start "*-1d"
@@ -119,6 +120,7 @@ pict pi record --server PISRV --url https://pihost/piwebapi --filter "FIC*" --du
 pict analyze capture/data.csv --config capture/config.csv --mode snapshot --server PISRV --out results
 ```
 
+- **Saved settings:** `pict pi config` saves the server, Web API URL, sign-in, TLS options and AF SDK folder to `pict.toml`, and shows them when run with no options. Every `pict pi` command and the UI start from them; options given on the command line win. The file is `PICT_CONFIG` if set, else `pict.toml` in the current folder, else `%APPDATA%\pict\pict.toml` (`~/.config/pict/pict.toml` elsewhere).
 - **PI Web API:**
   - `--auth` takes `kerberos` (the default), `basic` (which reads `PI_WEBAPI_USER` and `PI_WEBAPI_PASSWORD` from the environment), or `anonymous`.
   - Use `--ca-bundle` for an internal CA.

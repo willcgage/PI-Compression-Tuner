@@ -66,3 +66,41 @@ def test_pi_check_fails_when_nothing_works(monkeypatch):
     res = CliRunner().invoke(main, ["pi", "check", "--server", "SRV"])
     assert res.exit_code == 1
     assert "skipped, no --url" in res.output
+
+
+def test_pi_config_saves_settings_that_later_commands_use(monkeypatch):
+    import pi_compression_tuner.sources.afsdk as afsdk
+    import pi_compression_tuner.sources.piwebapi as webapi
+
+    seen = {}
+
+    class Web:
+        def __init__(self, url, auth, verify):
+            seen.update(url=url, auth=auth, verify=verify)
+
+        def check(self, server):
+            seen["server"] = server
+
+        def find_points(self, server, name_filter="*", max_count=1000):
+            return []
+
+    class NoSDK:
+        def __init__(self, *a, **k):
+            raise ImportError("none")
+
+    monkeypatch.setattr(webapi, "PIWebAPI", Web)
+    monkeypatch.setattr(afsdk, "AFSDK", NoSDK)
+    runner = CliRunner()
+    res = runner.invoke(main, ["pi", "config", "--server", "PISRV", "--url", "https://pi/piwebapi", "--auth", "anonymous"])
+    assert res.exit_code == 0 and "Saved" in res.output, res.output
+    res = runner.invoke(main, ["pi", "check"])
+    assert res.exit_code == 0, res.output
+    assert seen == {"url": "https://pi/piwebapi", "auth": "anonymous", "verify": True, "server": "PISRV"}
+    res = runner.invoke(main, ["pi", "check", "--insecure"])
+    assert seen["verify"] is False
+    assert "anonymous" in runner.invoke(main, ["pi", "config"]).output
+
+
+def test_pi_commands_need_a_server():
+    res = CliRunner().invoke(main, ["pi", "check"])
+    assert res.exit_code == 2 and "pict pi config --server" in res.output
