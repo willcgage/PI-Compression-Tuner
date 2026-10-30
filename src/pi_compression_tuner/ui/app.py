@@ -35,6 +35,7 @@ from pi_compression_tuner.ui import admin, style
 from pi_compression_tuner.ui.style import INK, VERDICT_COLOR
 
 WINDOWS = {"15 min": 900, "30 min": 1800, "1 h": 3600, "4 h": 14400}
+TREND_FULL_RES = 200_000  # input events drawn at full resolution in the trend; longer series are thinned
 PLOT_CONFIG = {"displaylogo": False, "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]}
 
 st.set_page_config(page_title="PI Compression Tuner", layout="wide", initial_sidebar_state="expanded")
@@ -580,22 +581,31 @@ with tab_point:
             t1.markdown(style.section("Trend"), unsafe_allow_html=True)
             view = t2.segmented_control("View", ["Whole period", "Largest miss"], default="Whole period",
                                         key=f"view_{tag}", label_visibility="collapsed") or "Whole period"
+            # Send the full-resolution trend (WebGL draws it quickly) so zooming and panning show real
+            # events; only very long series are thinned, and then Largest miss keeps a full-resolution
+            # stretch of context around the miss instead.
+            full = len(s.t) <= TREND_FULL_RES
             if view == "Largest miss":
                 k = int(np.argmax(err))
                 half = run_opts.window_s / 2
-                w = (s.t >= s.t[k] - half) & (s.t <= s.t[k] + half)
-                tt, vv = s.t[w], s.v[w]
-                xt, xv = s.t[w], excess[w]
+                lo, hi = s.t[k] - half, s.t[k] + half
+                w = (s.t >= lo) & (s.t <= hi)
+                if full:
+                    keep = np.ones(len(s.t), bool)
+                else:
+                    span = TREND_FULL_RES / 2 * np.median(np.diff(s.t)) if len(s.t) > 1 else half
+                    keep = (s.t >= s.t[k] - span) & (s.t <= s.t[k] + span)
+                tt, vv, xt, xv = s.t[keep], s.v[keep], s.t[keep], excess[keep]
             else:
-                tt, vv = envelope(s.t, s.v, 3000)
-                xt, xv = envelope(s.t, excess, 1500)
+                tt, vv = (s.t, s.v) if full else envelope(s.t, s.v, 3000)
+                xt, xv = (s.t, excess) if full else envelope(s.t, excess, 1500)
                 w = None
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.8, 0.2], vertical_spacing=0.05)
-            fig.add_scatter(x=ts(tt), y=vv, name="Input", line=dict(color=INK["input"], width=1), row=1, col=1)
+            fig.add_trace(go.Scattergl(x=ts(tt), y=vv, name="Input", line=dict(color=INK["input"], width=1)), row=1, col=1)
             for name, cfg, color in lines:
                 at, av = archives[name]
                 if w is not None:
-                    # one event either side so the segments into the window are drawn
+                    # one event either side so the segments into the shown stretch are drawn
                     i0 = max(int(np.searchsorted(at, tt[0])) - 1, 0)
                     i1 = int(np.searchsorted(at, tt[-1], side="right")) + 1
                     at, av = at[i0:i1], av[i0:i1]
@@ -603,25 +613,28 @@ with tab_point:
                     mode, mk = "lines+markers", dict(size=size, color=color, line=dict(width=1, color="white"))
                 else:
                     mode, mk = "lines", None
-                    at, av = envelope(at, av, 3000)
-                fig.add_scatter(x=ts(at), y=av, name=name, mode=mode, marker=mk, row=1, col=1,
-                                line=dict(color=color, width=1.8 if name != "Archive now" else 1.3,
-                                          shape="hv" if cfg.step else "linear"))
-            fig.add_scatter(x=ts(xt), y=xv, name="Detail lost", fill="tozeroy", fillcolor="rgba(208,87,74,0.25)",
-                            line=dict(color=INK["loss"], width=1), row=2, col=1)
+                    if len(at) > TREND_FULL_RES:
+                        at, av = envelope(at, av, 3000)
+                fig.add_trace(go.Scattergl(x=ts(at), y=av, name=name, mode=mode, marker=mk,
+                                           line=dict(color=color, width=1.8 if name != "Archive now" else 1.3,
+                                                     shape="hv" if cfg.step else "linear")), row=1, col=1)
+            fig.add_trace(go.Scattergl(x=ts(xt), y=xv, name="Detail lost", fill="tozeroy", fillcolor="rgba(208,87,74,0.25)",
+                                       line=dict(color=INK["loss"], width=1)), row=2, col=1)
             style.plot_layout(fig, 460, hovermode="x unified")
             fig.update_yaxes(title_text="Value", row=1, col=1)
             fig.update_yaxes(title_text="Lost", row=2, col=1, rangemode="tozero")
             if w is not None:
-                pad = max(np.ptp(vv), r.noise, 1e-9) * 0.15
-                fig.update_xaxes(range=[ts(tt[0]), ts(tt[-1])])
-                fig.update_yaxes(range=[vv.min() - pad, vv.max() + pad], row=1, col=1)
+                wv = s.v[w]
+                pad = max(np.ptp(wv), r.noise, 1e-9) * 0.15
+                fig.update_xaxes(range=[ts(lo), ts(hi)])
+                fig.update_yaxes(range=[wv.min() - pad, wv.max() + pad], row=1, col=1)
             st.plotly_chart(fig, use_container_width=True, config=PLOT_CONFIG)
             what = {"Archive now": "today's archive", "Archive proposed": "the proposed archive",
                     "Archive at probe": "the probe's archive"}[judged_name]
             st.markdown(f'<p class="pct-note">The lower strip shows where {what} strays from the input by more than the '
                         "noise band; flat means no real detail is lost. <b>Largest miss</b> zooms to one scoring window "
-                        "around the biggest error, with each archived event marked.</p>", unsafe_allow_html=True)
+                        "around the biggest error, with each archived event marked. Zoom and pan freely: every event is "
+                        "drawn; double-click the chart to see the whole period.</p>", unsafe_allow_html=True)
 
 # --- Export ---------------------------------------------------------------
 
