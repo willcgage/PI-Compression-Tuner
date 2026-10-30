@@ -89,7 +89,13 @@ def demo(out_dir, days, seed):
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     series_frame(series).to_csv(out / "data.csv", index=False, date_format="%Y-%m-%dT%H:%M:%SZ")
-    pd.DataFrame([{"Name": k, **{a.capitalize(): (int(b) if isinstance(b, bool) else b) for a, b in asdict(c).items()}}
+    def cell(b):
+        if isinstance(b, bool):
+            return int(b)
+        return "; ".join(f"{x:g}" for x in b) if isinstance(b, tuple) else b
+
+    names = {"alarm_limits": "AlarmLimits"}
+    pd.DataFrame([{"Name": k, **{names.get(a, a.capitalize()): cell(b) for a, b in asdict(c).items()}}
                   for k, c in configs.items()]).to_csv(out / "config.csv", index=False)
     click.echo(f"Wrote {out / 'data.csv'} and {out / 'config.csv'}. Try: pict analyze {out / 'data.csv'} --config {out / 'config.csv'} --mode raw")
 

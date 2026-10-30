@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from .metrics import Score, estimate_noise, retention_score, reconstruct
-from .moments import find_spikes, moment_index, smooth
+from .moments import find_spikes, implied_compdev, moment_index, smooth
 from .models import PointConfig, Series
 from .simulate import simulate_archive
 
@@ -100,6 +100,7 @@ class TuneResult:
     notes: list = field(default_factory=list)
     moments: tuple = ()  # key moment timestamps the result was tuned to keep
     spikes: int = 0      # isolated one-event spikes in the input
+    moment_compdev: float | None = None  # CompDev the key moments alone imply (a sanity check)
 
     @property
     def changes(self) -> bool:
@@ -358,6 +359,17 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
             notes.append(f"Current settings miss {current_eval.moments_missed} of {len(moments)} key moments.")
         if recommended is not None:
             notes.append(f"The proposal keeps all {len(moments)} key moments.")
+    moment_compdev = implied_compdev(series, moments) if moments else None
+    if moment_compdev is not None and recommended is not None:
+        prop_c = recommended.config.compdev
+        msg = (f"The key moments alone imply CompDev about {moment_compdev:.3g} (the average largest distance "
+               f"of the signal from a straight line between consecutive moments); the proposal is {prop_c:.3g}.")
+        if moment_compdev > 3 * prop_c:
+            msg += " The moments are far apart for this signal, so treat that figure as a loose upper guide."
+        elif moment_compdev < 0.5 * prop_c:
+            msg += (" The signal runs close to straight between the moments, so a setting nearer that figure "
+                    "would follow their path more closely.")
+        notes.append(msg)
     if len(spikes):
         notes.append(f"{len(spikes)} isolated spike{'s' if len(spikes) > 1 else ''} (one event jumping "
                      "6 or more noise widths and straight back). Check whether they are real events or "
@@ -369,4 +381,4 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
                      "or an instrument fault; mark it as a key moment to keep it.")
 
     safe = cls in (Classification.STORING_NOISE, Classification.LOSING_DETAIL)
-    return TuneResult(tag, cls, current_eval, recommended, noise, n, safe, notes, moments, len(spikes))
+    return TuneResult(tag, cls, current_eval, recommended, noise, n, safe, notes, moments, len(spikes), moment_compdev)

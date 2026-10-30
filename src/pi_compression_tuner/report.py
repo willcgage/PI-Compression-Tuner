@@ -19,6 +19,7 @@ import numpy as np
 from . import present
 from .metrics import reconstruct
 from .models import Series
+from .moments import moment_index
 from .simulate import simulate_archive
 from .tune import Classification, TuneOptions, TuneResult
 
@@ -35,10 +36,10 @@ _VERDICT_CLASS = {
 _CSS = """
 :root{--bg:#f4f7f8;--panel:#fff;--ink:#17222a;--muted:#5b6a75;--rule:#dde4e8;--soft:#eef2f4;
 --raw:#9aa6af;--cur:#c0702b;--rec:#13708a;--loss:#d0574a;--loss-fill:rgba(208,87,74,.22);--hi:rgba(19,112,138,.07);
---v-ok:#2f7a3c;--v-noise:#b8661f;--v-loss:#c0392b;--v-info:#4b5d9a;--v-none:#7b8790;color-scheme:light}
+--mark:#6d4bb3;--v-ok:#2f7a3c;--v-noise:#b8661f;--v-loss:#c0392b;--v-info:#4b5d9a;--v-none:#7b8790;color-scheme:light}
 @media (prefers-color-scheme:dark){:root{--bg:#0f161b;--panel:#162028;--ink:#e3eaee;--muted:#9aabb6;--rule:#2a3843;
 --soft:#1d2932;--raw:#6b7a85;--cur:#f0914f;--rec:#5cc3da;--loss:#f08378;--loss-fill:rgba(240,131,120,.22);
---hi:rgba(92,195,218,.09);--v-ok:#79c486;--v-noise:#f0b44a;--v-loss:#ec8a7f;--v-info:#9fb0ee;--v-none:#9aa6af;
+--hi:rgba(92,195,218,.09);--mark:#b79cf0;--v-ok:#79c486;--v-noise:#f0b44a;--v-loss:#ec8a7f;--v-info:#9fb0ee;--v-none:#9aa6af;
 color-scheme:dark}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "IBM Plex Sans","Segoe UI",system-ui,sans-serif;
@@ -101,6 +102,9 @@ margin-bottom:4px}
 .trend svg{width:100%;height:auto;display:block}
 .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:.8rem;color:var(--muted)}
 .sw{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:5px;border-radius:2px}
+.sw.dia{width:9px;height:9px;border-radius:0;background:none!important;border:2px solid var(--mark);transform:rotate(45deg);
+margin:0 8px 0 3px}
+.sw.dash{background:none!important;border-top:2px dashed var(--mark);height:0}
 .two{display:grid;grid-template-columns:3fr 2fr;gap:24px}
 .pct-attrs{width:100%;border-collapse:collapse;font-size:.86rem;font-variant-numeric:tabular-nums}
 .pct-attrs th{text-align:right;font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
@@ -178,8 +182,12 @@ def _time_ticks(t0: float, t1: float, n: int = 5):
     return ticks, labels
 
 
-def _chart(lines, t0, t1, w, h, strip=None, markers=False, clip_id="c"):
-    """An SVG line chart. ``lines`` are (t, v, css-var, width); ``strip`` is (t, v) drawn as a filled band below."""
+def _chart(lines, t0, t1, w, h, strip=None, markers=False, clip_id="c", marks=None, limits=()):
+    """An SVG line chart. ``lines`` are (t, v, css-var, width); ``strip`` is (t, v) drawn as a filled band below.
+
+    ``marks`` are key moments as (t, v), drawn as open diamonds; ``limits`` are alarm limits,
+    drawn as dashed lines when they fall in the plotted range.
+    """
     sh = 52 if strip is not None else 0
     top, bottom, left, right = 8, 22, 46, 8
     ph = h - top - bottom - sh
@@ -188,6 +196,9 @@ def _chart(lines, t0, t1, w, h, strip=None, markers=False, clip_id="c"):
     if len(vals) == 0:
         vals = np.concatenate([v for _, v, _, _ in lines if len(v)])
     lo, hi = float(np.min(vals)), float(np.max(vals))
+    limits = [x for x in limits if lo - 0.25 * (hi - lo) <= x <= hi + 0.25 * (hi - lo)]
+    if limits:
+        lo, hi = min(lo, *limits), max(hi, *limits)
     if hi == lo:
         hi = lo + 1
     pad = (hi - lo) * 0.06
@@ -214,6 +225,15 @@ def _chart(lines, t0, t1, w, h, strip=None, markers=False, clip_id="c"):
             r = 2.2 if color == "--cur" else 3.6
             out.extend(f'<circle cx="{sx(a):.1f}" cy="{sy(b):.1f}" r="{r}" fill="var({color})" stroke="var(--panel)" '
                        f'stroke-width="1"/>' for a, b in zip(t[inside_t], v[inside_t]))
+    for x in limits:
+        out.append(f'<line x1="{left}" x2="{w - right}" y1="{sy(x):.1f}" y2="{sy(x):.1f}" stroke="var(--mark)" '
+                   f'stroke-width="1" stroke-dasharray="5 4"/>')
+    if marks is not None:
+        mt, mv = marks
+        keep = (mt >= t0) & (mt <= t1)
+        out.extend(f'<rect x="{sx(a) - 4.5:.1f}" y="{sy(b) - 4.5:.1f}" width="9" height="9" fill="none" '
+                   f'stroke="var(--mark)" stroke-width="2" transform="rotate(45 {sx(a):.1f} {sy(b):.1f})"/>'
+                   for a, b in zip(mt[keep], mv[keep]))
     base = top + ph
     out.append(f'<line x1="{left}" x2="{w - right}" y1="{base:.1f}" y2="{base:.1f}" stroke="var(--rule)"/>')
     if strip is not None:
@@ -238,8 +258,10 @@ def _chart(lines, t0, t1, w, h, strip=None, markers=False, clip_id="c"):
 
 
 def _legend(items):
-    return '<div class="legend">' + "".join(
-        f'<span><i class="sw" style="background:var({c})"></i>{html.escape(n)}</span>' for n, c in items) + "</div>"
+    """Legend entries are (name, css-var); a css-var of "dia" or "dash" draws a key moment or alarm limit swatch."""
+    def sw(c):
+        return f'<i class="sw {c}"></i>' if c in ("dia", "dash") else f'<i class="sw" style="background:var({c})"></i>'
+    return '<div class="legend">' + "".join(f'<span>{sw(c)}{html.escape(n)}</span>' for n, c in items) + "</div>"
 
 
 def _point_section(r: TuneResult, s: Series, opts: TuneOptions, selected: bool) -> str:
@@ -276,7 +298,10 @@ def _point_section(r: TuneResult, s: Series, opts: TuneOptions, selected: bool) 
     full = [(*envelope(s.t, s.v, 1500), "--raw", 1.0), (*envelope(ct, cv, 1500), "--cur", 1.2)]
     if prop is not None:
         full.append((*envelope(judged[0], judged[1], 1500), "--rec", 1.8))
-    whole = _chart(full, s.t[0], s.t[-1], _W, _H, strip=envelope(s.t, excess, 600), clip_id=f"w{_anchor(r.tag)}")
+    mi = moment_index(s, r.moments)
+    marks = (s.t[mi], s.v[mi]) if len(mi) else None
+    whole = _chart(full, s.t[0], s.t[-1], _W, _H, strip=envelope(s.t, excess, 600), clip_id=f"w{_anchor(r.tag)}",
+                   marks=marks, limits=cfg.alarm_limits)
 
     # The scoring window around the largest miss, with every archived event marked.
     k = int(np.argmax(err))
@@ -290,9 +315,10 @@ def _point_section(r: TuneResult, s: Series, opts: TuneOptions, selected: bool) 
     zoom = [(*sel(s.t, s.v), "--raw", 1.0), (*sel(ct, cv), "--cur", 1.0)]
     if prop is not None:
         zoom.append((*sel(judged[0], judged[1]), "--rec", 1.8))
-    zchart = _chart(zoom, z0, z1, _ZW, _ZH, markers=True, clip_id=f"z{_anchor(r.tag)}")
+    zchart = _chart(zoom, z0, z1, _ZW, _ZH, markers=True, clip_id=f"z{_anchor(r.tag)}", marks=marks)
     legend = [("Input", "--raw"), ("Archive now", "--cur")] + ([("Archive proposed", "--rec")] if prop else []) \
-        + [("Detail lost", "--loss")]
+        + [("Detail lost", "--loss")] + ([("Key moment", "dia")] if marks else []) \
+        + ([("Alarm limit", "dash")] if cfg.alarm_limits else [])
     parts.append(_legend(legend))
     parts.append(f'<div class="trend"><figure><figcaption>Whole period</figcaption>{whole}</figure>'
                  f'<figure><figcaption>Largest miss · {opts.window_s / 60:g} min around the biggest error</figcaption>'
