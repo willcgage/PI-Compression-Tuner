@@ -122,3 +122,54 @@ def test_duplicates_command(tmp_path):
     assert "Exact copy" in res.output and "1 group," in res.output
     got = pd.read_csv(tmp_path / "dup.csv")
     assert set(got[["Point A", "Point B"]].iloc[0]) == {"tag_123.value", "tag_123.scaled"}
+
+
+def test_pi_record_saves_each_poll_so_a_crash_keeps_what_was_recorded(tmp_path, monkeypatch):
+    import numpy as np
+
+    import pi_compression_tuner.cli as cli
+    from pi_compression_tuner.models import Series
+    from pi_compression_tuner.sources.base import PointRef
+
+    class Recorder:
+        def point(self, server, tag):
+            return PointRef(tag)
+
+        def attributes(self, ref):
+            return {"compdev": 0.5}
+
+        def record_snapshots(self, refs, duration_s, poll_s=5.0, on_poll=None, on_batch=None, stop=None):
+            t0 = 1767225600.0
+            on_batch({"A": Series(np.array([t0, t0 + 1]), np.array([1.0, 2.0]))})
+            on_batch({"A": Series(np.array([t0 + 2]), np.array([3.0])), "B": Series(np.array([t0]), np.array([7.0]))})
+            # What the old version died of: an unhandled exception after hours of recording.
+            raise RuntimeError("Python.Runtime.PythonException")
+
+    monkeypatch.setattr(cli, "_connect", lambda *a: Recorder())
+    out = tmp_path / "capture"
+    res = CliRunner().invoke(main, ["pi", "record", "--server", "SRV", "--tag", "A", "--tag", "B", "--out", str(out)])
+    assert isinstance(res.exception, RuntimeError)
+    assert "Saved 4 events" in res.output
+    from pi_compression_tuner.sources.csvfiles import read_series
+
+    got = read_series(out / "data.csv")
+    assert got["A"].v.tolist() == [1.0, 2.0, 3.0] and got["B"].v.tolist() == [7.0]
+    assert got["A"].t[0] == 1767225600.0
+
+
+def test_first_ctrl_c_while_recording_asks_to_stop_and_the_second_quits():
+    import os
+    import signal
+
+    import pytest
+
+    from pi_compression_tuner.cli import _ctrl_c_stops
+
+    before = signal.getsignal(signal.SIGINT)
+    with _ctrl_c_stops() as stopping:
+        assert not stopping()
+        os.kill(os.getpid(), signal.SIGINT)  # no KeyboardInterrupt: nothing can escape through .NET
+        assert stopping()
+        with pytest.raises(KeyboardInterrupt):
+            os.kill(os.getpid(), signal.SIGINT)
+    assert signal.getsignal(signal.SIGINT) is before

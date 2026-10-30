@@ -158,3 +158,45 @@ def test_find_points_passes_point_source_and_filters_the_rest():
     assert [r.name for r in got] == ["A", "C"] and seen == {"name": "*", "source": "OPC*"}
     assert got[0].engunits == "gpm" and src.last_search["scanned"] == 3
     assert [r.name for r in src.find_points("SRV", "*", 10)] == ["A", "B", "C"] and seen["source"] is None
+
+
+def test_snapshot_pipe_hands_each_poll_over_and_stops_when_asked():
+    pt = FakePoint([])
+    pt.Name = "TAG1"
+    polls = [[1, 2, 3], [4, 5], []]
+    closed = []
+
+    class Pipe:
+        def __init__(self, kind):
+            pass
+
+        def AddSignups(self, pts):
+            pass
+
+        def GetUpdateEvents(self, n):
+            out = []
+            for i in polls.pop(0) if polls else []:
+                v = FakeValue(1767225600 + i, float(i))
+                v.PIPoint = pt
+                out.append(NS(Action="Add", Value=v))
+            return out
+
+        def Close(self):
+            closed.append("close")
+
+        def Dispose(self):
+            closed.append("dispose")
+
+    sdk = _sdk(pt)
+    sdk["PI"].PIDataPipe = Pipe
+    sdk["Data"].AFDataPipeType = NS(Snapshot="Snapshot")
+    sdk["List"] = NetList
+    src = AFSDK(sdk=sdk)
+    ref = src.point("SRV", "TAG1")
+    batches = []
+    # A day-long recording that a Ctrl+C (the stop flag) ends after the second poll.
+    out = src.record_snapshots([ref], duration_s=86400, poll_s=0, on_batch=lambda b: batches.append(b["TAG1"].v.tolist()),
+                               stop=lambda: len(batches) >= 2)
+    assert batches == [[1.0, 2.0, 3.0], [4.0, 5.0]]
+    assert out["TAG1"].v.tolist() == [1.0, 2.0, 3.0, 4.0, 5.0]
+    assert closed == ["close", "dispose"]
