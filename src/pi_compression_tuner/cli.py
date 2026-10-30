@@ -113,6 +113,36 @@ def demo(out_dir, days, seed):
     click.echo(f"Wrote {out / 'data.csv'} and {out / 'config.csv'}. Try: pict analyze {out / 'data.csv'} --config {out / 'config.csv'} --mode raw")
 
 
+def _duplicates_out(series, infos, loose, out_path):
+    from .duplicates import DuplicateOptions, describe, find_duplicates, pairs_frame
+    rep = find_duplicates(series, infos, DuplicateOptions(include_loose=loose))
+    pairs_frame(rep).to_csv(out_path, index=False, float_format="%.6g")
+    click.echo(f"Compared {rep.compared} of {len(series)} points ({len(rep.skipped)} had too little moving data).")
+    for i, g in enumerate(rep.groups, 1):
+        click.echo(f"  {i}. {g.match.value}: keep {g.keep}; copies {', '.join(g.members[1:])} "
+                   f"({g.redundant_per_day:,.0f} events/day)")
+        for p in g.pairs:
+            click.echo(f"       {describe(p)}")
+    if rep.loose:
+        click.echo(f"  {len(rep.loose)} pair(s) move together but are not copies (see the CSV).")
+    if rep.name_only:
+        click.echo(f"  {len(rep.name_only)} pair(s) of look-alike names could not be compared on data (see the CSV).")
+    n, k = len(rep.groups), rep.redundant_points
+    click.echo(f"Wrote {out_path}: {n} group{'s' if n != 1 else ''}, {k} point{'s' if k != 1 else ''} that look like copies.")
+
+
+@main.command()
+@click.argument("data", type=click.Path(exists=True, dir_okay=False))
+@click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False),
+              help="CSV of point attributes. Descriptor, EngUnits, PointSource and InstrumentTag columns add hints.")
+@click.option("--loose", is_flag=True, help="Also list pairs that move together closely but are not copies.")
+@click.option("--out", "out_path", default="duplicates.csv", show_default=True)
+def duplicates(data, config_path, loose, out_path):
+    """Find points in DATA (CSV) that store the same signal: exact copies, rescaled copies and look-alike names."""
+    from .sources.csvfiles import read_point_info
+    _duplicates_out(read_series(data), read_point_info(config_path) if config_path else {}, loose, out_path)
+
+
 # --- PI (read-only) ----------------------------------------------------
 
 def _settings(server, source, url, auth, ca_bundle, insecure, afsdk_dir):
@@ -296,6 +326,28 @@ def fetch(server, source, url, auth, ca_bundle, insecure, afsdk_dir, tags, name_
     series = fetch_recorded(src, refs, start, end, progress=lambda i, n: click.echo(f"\r  {i}/{n} points", nl=False, err=True))
     series_frame(series).to_csv(out / "data.csv", index=False, date_format="%Y-%m-%dT%H:%M:%S.%fZ")
     click.echo(f"\nWrote {out / 'data.csv'} and {out / 'config.csv'}.")
+
+
+@pi.command("duplicates")
+@_pi_options
+@_point_options
+@click.option("--start", default="*-7d", show_default=True)
+@click.option("--end", default="*", show_default=True)
+@click.option("--loose", is_flag=True, help="Also list pairs that move together closely but are not copies.")
+@click.option("--out", "out_path", default="duplicates.csv", show_default=True)
+def pi_duplicates(server, source, url, auth, ca_bundle, insecure, afsdk_dir, tags, name_filter, limit, start, end, loose,
+                  out_path):
+    """Read archived values and find points that store the same signal. Compare points from one interface or area
+    at a time, over the same period."""
+    from .sources.ops import fetch_recorded
+    from .templates import point_info
+    src = _connect(server, source, url, auth, ca_bundle, insecure, afsdk_dir)
+    server = _settings(server, source, url, auth, ca_bundle, insecure, afsdk_dir).server
+    refs = _resolve(src, server, tags, name_filter, limit)
+    infos = {r.name: point_info(r.name, src.attributes(r), r) for r in refs}
+    series = fetch_recorded(src, refs, start, end, progress=lambda i, n: click.echo(f"\r  {i}/{n} points", nl=False, err=True))
+    click.echo("", err=True)
+    _duplicates_out(series, infos, loose, out_path)
 
 
 def _resolve(src, server, tags, name_filter, limit):

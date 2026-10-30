@@ -21,7 +21,8 @@ DEFAULT_ASSEMBLY_DIRS = (
     r"C:\Program Files\PIPC\AF\PublicAssemblies\4.0",
 )
 _ATTRS = ("excdev", "excmin", "excmax", "compdev", "compmin", "compmax",
-          "compressing", "step", "zero", "span", "pointtype", "descriptor", "engunits", "ptclassname", "pointsource")
+          "compressing", "step", "zero", "span", "pointtype", "descriptor", "engunits", "ptclassname", "pointsource",
+          "instrumenttag")
 
 
 def load_afsdk(assembly_dir: str | None = None):

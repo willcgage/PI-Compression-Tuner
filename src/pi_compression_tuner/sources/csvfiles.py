@@ -114,7 +114,8 @@ def read_configs(path: str | Path) -> dict[str, PointConfig]:
 
 
 _INFO_COLS = {"descriptor": ("descriptor", "description"), "engunits": ("engunits", "units", "engineeringunits"),
-              "pointtype": ("pointtype",), "ptclassname": ("ptclassname", "pointclass"), "pointsource": ("pointsource",)}
+              "pointtype": ("pointtype",), "ptclassname": ("ptclassname", "pointclass"), "pointsource": ("pointsource",),
+              "instrumenttag": ("instrumenttag",)}
 
 
 def read_point_info(path: str | Path) -> dict[str, dict]:

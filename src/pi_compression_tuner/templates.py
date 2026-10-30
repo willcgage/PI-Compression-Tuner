@@ -195,7 +195,7 @@ def point_info(tag: str, attrs: dict | None = None, ref=None) -> dict:
 
     return {"tag": tag, "descriptor": get("descriptor", "descriptor"), "engunits": get("engunits", "engunits"),
             "pointtype": get("pointtype", "pointtype"), "ptclassname": get("ptclassname", "pointclass"),
-            "pointsource": get("pointsource")}
+            "pointsource": get("pointsource"), "instrumenttag": get("instrumenttag")}
 
 
 def tune_options_for(template: Template | None, opts):

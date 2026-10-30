@@ -224,6 +224,29 @@ def test_search_by_units_and_description(monkeypatch):
     assert list(at.session_state["pi_found"]) == ["DEMO.LEVEL.PV"]
 
 
+def test_duplicates_page_finds_a_copy():
+    import numpy as np
+
+    from pi_compression_tuner.models import Series
+    t = np.arange(0, 86400, 60.0)
+    v = np.sin(t / 5000) * 10 + 50
+    at = AppTest.from_file(APP, default_timeout=120)
+    at.run()
+    at.session_state["series"] = {"tag_123.value": Series(t, v), "tag_123.scaled": Series(t, v),
+                                  "FT9.raw": Series(t, v * 40 + 3), "other": Series(t, np.cos(t / 900) + t / 1e4)}
+    at.session_state["source_note"] = "test"
+    at.run()
+    at.button(key="dup_open").click().run()
+    at.button(key="dup_run").click().run()
+    assert not at.exception, at.exception
+    text = " ".join(m.value for m in at.markdown)
+    assert "Exact copy" in text or "Scaled copy" in text
+    assert "tag_123.scaled" in text or "tag_123.value" in text
+    at.button(key="dup_back").click().run()
+    assert not at.exception, at.exception
+    assert at.button(key="run")  # back on the tuner
+
+
 def test_key_moments_suggest_and_retune():
     at = _loaded_and_run()
     at.selectbox(key="detail_tag").set_value("DEMO.LEVEL.PV").run()

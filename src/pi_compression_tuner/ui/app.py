@@ -5,6 +5,7 @@ Three tabs:
   * Point detail: one point's finding in plain words, now-versus-proposed outcome and settings,
     the trend with a residual strip, and a trade-off curve with a probe to try any CompDev.
   * Export: the PI Builder sheet, results table and HTML report.
+A Duplicates page, opened from the sidebar, finds loaded points that store the same signal.
 Recommendations only: nothing here writes to PI.
 """
 
@@ -33,7 +34,7 @@ from pi_compression_tuner.simulate import simulate_archive
 from pi_compression_tuner.sources.csvfiles import read_configs, read_point_info, read_series
 from pi_compression_tuner.templates import match, point_info, tune_with_template
 from pi_compression_tuner.tune import Classification, TuneOptions, evaluate_config, tradeoff_curve
-from pi_compression_tuner.ui import admin, style
+from pi_compression_tuner.ui import admin, duplicates, style
 from pi_compression_tuner.ui.style import INK, VERDICT_COLOR
 
 WINDOWS = {"15 min": 900, "30 min": 1800, "1 h": 3600, "4 h": 14400}
@@ -283,6 +284,17 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Could not read from PI: {e}")
 
+    if ss.view != "duplicates":
+        st.button("Find duplicate points", key="dup_open", use_container_width=True, disabled=ss.series is None,
+                  on_click=_go, args=("duplicates",), help="Points among those loaded that store the same signal.")
+
+if ss.view == "duplicates":
+    with st.sidebar:
+        st.button("← Back to the tuner", key="dup_back", use_container_width=True, on_click=_go, args=("tuner",))
+    duplicates.render(ss.series, ss.infos, ss.source_note)
+    st.stop()
+
+with st.sidebar:
     st.markdown("### Tuning")
     mode = st.radio("The data is", ["snapshot", "raw"], key="mode",
                     format_func={"snapshot": "Snapshot stream · tune CompDev",
