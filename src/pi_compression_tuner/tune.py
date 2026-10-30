@@ -62,6 +62,7 @@ class TuneOptions:
     min_events: int = 50
     noise_multiples: tuple = (0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32)
     span_percents: tuple = (0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5)
+    range_percents: tuple = (0.1, 0.25, 0.5, 1, 2, 5)
     refine_steps: int = 6
 
     def __post_init__(self):
@@ -167,7 +168,8 @@ def tradeoff_curve(series: Series, current: PointConfig, opts: TuneOptions = Tun
                    points: int = 18, excdev_ratio: float | None = None) -> list[Evaluation]:
     """Retention and archive volume across a log-spaced sweep of CompDev, for plotting the trade-off.
 
-    The sweep runs from a quarter of the noise to 40 times it (or to 5% of span, if larger),
+    The sweep runs from a quarter of the noise to 40 times it (or to 5% of span or of the
+    observed range, if larger),
     with ExcDev handled as in :func:`tune_point`. In raw mode ExcDev follows ``excdev_ratio``
     (pass the proposal's ratio), else ``opts.excdev_ratio``, else 0.5.
     """
@@ -175,7 +177,7 @@ def tradeoff_curve(series: Series, current: PointConfig, opts: TuneOptions = Tun
         noise = estimate_noise(series.v)
     if noise <= 0 or len(series) < 2:
         return []
-    hi = max(40 * noise, 0.05 * current.span if current.span > 0 else 0)
+    hi = max(40 * noise, 0.05 * current.span if current.span > 0 else 0, 0.05 * float(np.ptp(series.v)))
     lo = max(0.25 * noise, current.excdev if opts.input_mode == "snapshot" else 0)
     evaluate = _Evaluator(series, opts, noise, current.step)
     ratio = excdev_ratio if excdev_ratio is not None else (opts.excdev_ratio if opts.excdev_ratio is not None else 0.5)
@@ -238,10 +240,13 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
     def feasible(ev: Evaluation) -> bool:
         return ev.score.retention >= opts.target and ev.score.max_error <= limit and ev.moments_missed == 0
 
-    # Candidate CompDev values: multiples of the measured noise, plus common span percentages.
+    # Candidate CompDev values: multiples of the measured noise, plus percentages of the span and
+    # of the observed range. The range keeps the grid wide enough when the noise estimate is small
+    # next to how far the signal moves, or when Zero/Span does not fit the data.
     cands = {noise * m for m in opts.noise_multiples}
     if current.span > 0:
         cands |= {current.span * p / 100.0 for p in opts.span_percents}
+    cands |= {float(np.ptp(series.v)) * p / 100.0 for p in opts.range_percents}
     lo_bound = current.excdev if opts.input_mode == "snapshot" else 0.0
     cands = sorted(c for c in cands if c > 0 and c >= lo_bound * 0.999)
     if not cands:

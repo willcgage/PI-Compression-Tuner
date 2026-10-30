@@ -54,15 +54,22 @@ def _ts(af_value) -> str:
 
 
 def _num(af_value):
+    """The value as a float, or None for bad values, digital states and other non-numeric values."""
     if not af_value.IsGood:
         return None
-    try:
-        v = af_value.Value
-        if isinstance(v, bool):
-            return None
+    v = af_value.Value
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
         return float(v)
-    except (TypeError, ValueError):
-        return None  # digital states and other non-numeric values
+    # pythonnet can hand back a boxed .NET number (System.Single, Int32, ...) that float() refuses;
+    # AFValue.ValueAsDouble converts those. Enumeration values (digital states) are not numbers.
+    try:
+        if "Enumeration" in str(v.GetType().Name):
+            return None
+        return float(af_value.ValueAsDouble())
+    except Exception:
+        return None
 
 
 def _series(af_values) -> Series:
@@ -97,8 +104,8 @@ class AFSDK:
     def _pt(self, ref: PointRef):
         return self._points[ref.path]
 
-    def _ref(self, server: str, pt) -> PointRef:
-        ref = PointRef(pt.Name, "", f"\\\\{server}\\{pt.Name}")
+    def _ref(self, server: str, pt, descriptor: str = "", engunits: str = "") -> PointRef:
+        ref = PointRef(pt.Name, "", f"\\\\{server}\\{pt.Name}", descriptor, engunits)
         self._points[ref.path] = pt
         return ref
 
@@ -107,9 +114,16 @@ class AFSDK:
 
     def find_points(self, server: str, name_filter: str = "*", max_count: int = 1000) -> list[PointRef]:
         PIPoint = self.sdk["PI"].PIPoint
+        names = ["descriptor", "engunits"]
+        load = None
+        if "List" in self.sdk:
+            load = self.sdk["List"][self.sdk["System"].String]()
+            for a in names:
+                load.Add(a)
         out = []
-        for pt in PIPoint.FindPIPoints(self._server(server), name_filter, None, None):
-            out.append(self._ref(server, pt))
+        for pt in PIPoint.FindPIPoints(self._server(server), name_filter, None, load):
+            desc, units = (str(pt.GetAttribute(a) or "") for a in names)
+            out.append(self._ref(server, pt, desc, units))
             if len(out) >= max_count:
                 break
         return out
@@ -160,15 +174,16 @@ class AFSDK:
         pipe.AddSignups(pts)
         events: dict[str, list] = {r.name: [] for r in refs}
         deadline = time.monotonic() + duration_s
+        batch = 10000
         try:
             while True:
-                more = True
-                while more:
-                    res = pipe.GetUpdateEvents(5000)
-                    for ev in res.Results:
+                while True:  # drain the pipe: a full batch means more events are waiting
+                    res = list(pipe.GetUpdateEvents(batch))
+                    for ev in res:
                         if str(ev.Action) in ("Add", "Update"):
                             events.setdefault(ev.Value.PIPoint.Name, []).append(ev.Value)
-                    more = bool(getattr(res, "HasMoreEvents", False))
+                    if len(res) < batch:
+                        break
                 if on_poll:
                     on_poll({k: len(v) for k, v in events.items()})
                 if time.monotonic() >= deadline:
@@ -177,5 +192,6 @@ class AFSDK:
         except KeyboardInterrupt:
             pass
         finally:
+            pipe.Close()  # removes the signups, as in AVEVA's AF SDK course (Exercise 5)
             pipe.Dispose()
         return {k: _series(v) for k, v in events.items()}

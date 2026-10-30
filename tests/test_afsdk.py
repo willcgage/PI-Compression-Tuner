@@ -63,3 +63,72 @@ def test_point_attributes_and_paged_recorded_values():
     s = sdk.recorded(ref, "*-1d", "*", page_size=3)
     assert s.v.tolist() == [float(i) for i in range(9)]
     assert [r.name for r in sdk.find_points("SRV", "*")] == ["TAG1"]
+
+
+class NetList(list):
+    """Stands in for System.Collections.Generic.List: NetList[T]() and .Add."""
+
+    Add = list.append
+
+
+def test_snapshot_pipe_drains_full_batches_and_closes():
+    pt = FakePoint([])
+    pt.Name = "TAG1"
+    evs = []
+    for i in range(25000):
+        v = FakeValue(1767225600 + i, float(i))
+        v.PIPoint = pt
+        evs.append(NS(Action="Add", Value=v))
+    calls = []
+
+    class Pipe:
+        def __init__(self, kind):
+            pass
+
+        def AddSignups(self, pts):
+            pass
+
+        def GetUpdateEvents(self, n):
+            calls.append(n)
+            out, evs[:] = evs[:n], evs[n:]
+            return out
+
+        def Close(self):
+            calls.append("close")
+
+        def Dispose(self):
+            calls.append("dispose")
+
+    sdk = _sdk(pt)
+    sdk["PI"].PIDataPipe = Pipe
+    sdk["Data"].AFDataPipeType = NS(Snapshot="Snapshot")
+    sdk["List"] = NetList
+    src = AFSDK(sdk=sdk)
+    ref = src.point("SRV", "TAG1")
+    out = src.record_snapshots([ref], duration_s=0, poll_s=0)
+    assert len(out["TAG1"]) == 25000
+    assert calls == [10000, 10000, 10000, "close", "dispose"]
+
+
+def test_boxed_dotnet_numbers_are_read_and_digital_states_dropped():
+    from pi_compression_tuner.sources.afsdk import _num
+
+    class Boxed:  # a .NET System.Single that float() refuses, as pythonnet can return
+        def GetType(self):
+            return NS(Name="Single")
+
+        def __float__(self):
+            raise TypeError("float() argument must be a string or a real number")
+
+    class State:
+        def GetType(self):
+            return NS(Name="AFEnumerationValue")
+
+    def val(v, good=True, as_double=None):
+        return NS(IsGood=good, Value=v, ValueAsDouble=lambda: as_double)
+
+    assert _num(val(Boxed(), as_double=12.5)) == 12.5
+    assert _num(val(3)) == 3.0
+    assert _num(val(State(), as_double=248.0)) is None
+    assert _num(val(1.0, good=False)) is None
+    assert _num(val(True)) is None

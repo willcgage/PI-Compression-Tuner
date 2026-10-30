@@ -36,6 +36,7 @@ from pi_compression_tuner.ui import style
 from pi_compression_tuner.ui.style import INK, VERDICT_COLOR
 
 WINDOWS = {"15 min": 900, "30 min": 1800, "1 h": 3600, "4 h": 14400}
+TREND_FULL_RES = 200_000  # input events drawn at full resolution in the trend; longer series are thinned
 PLOT_CONFIG = {"displaylogo": False, "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]}
 
 st.set_page_config(page_title="PI Compression Tuner", layout="wide", initial_sidebar_state="expanded")
@@ -74,19 +75,86 @@ def _read_upload(upload, reader):
         Path(path).unlink(missing_ok=True)
 
 
-def _load_pi(server, source, url, auth, verify, afsdk_dir, tags, name_filter, limit, start, end):
+def _pi_settings():
+    from pi_compression_tuner.settings import PISettings
+    return PISettings(server=ss.pi_server.strip(), url=ss.pi_url.strip(), source=ss.pi_source, auth=ss.pi_auth,
+                      verify=ss.pi_verify, ca_bundle=ss.pi_ca_bundle.strip(), afsdk_dir=ss.pi_afsdk_dir.strip())
+
+
+def _pi_connection():
+    """One connection per set of connection settings, kept so a search and the read that follows share it."""
     from pi_compression_tuner.sources.connect import connect
-    from pi_compression_tuner.sources.ops import fetch_recorded, resolve_points
-    conn = connect(server, source=source, url=url or None, auth=auth, verify=verify, afsdk_dir=afsdk_dir or None)
-    refs = resolve_points(conn.source, server, tags, name_filter or None, limit)
+    s = _pi_settings()
+    key = tuple(vars(s).values())
+    if ss.get("pi_conn_key") != key:
+        ss.pi_conn = connect(s.server, source=s.source, url=s.url or None, auth=s.auth, verify=s.tls_verify(),
+                             afsdk_dir=s.afsdk_dir or None)
+        ss.pi_conn_key, ss.pi_found = key, {}
+        if ss.pi_conn.note:
+            st.toast(ss.pi_conn.note)
+    return ss.pi_conn
+
+
+def _search_filter(text: str) -> str:
+    """A plain word searches anywhere in the name; text with * or ? is used as PI's own name filter."""
+    text = text.strip()
+    return text if any(c in text for c in "*?") else f"*{text}*"
+
+
+def _search_pi():
+    conn = _pi_connection()
+    refs = conn.source.find_points(ss.pi_server.strip(), _search_filter(ss.pi_search), max_count=int(ss.pi_limit))
+    ss.pi_found = {r.name: r for r in refs}
+    ss.pi_picked = [t for t in ss.get("pi_picked", []) if t in ss.pi_found]
+    ss.pi_table_v = ss.get("pi_table_v", 0) + 1
+
+
+def _load_pi(refs, start, end):
+    from pi_compression_tuner.sources.ops import fetch_recorded
+    conn = _pi_connection()
     configs = {r.name: conn.source.config(r) for r in refs}
     bar = st.progress(0.0, text="Reading archived values")
     series = fetch_recorded(conn.source, refs, start, end, progress=lambda i, n: bar.progress(i / n, text=f"Read {i} of {n} points"))
     bar.empty()
     via = "PI Web API" if conn.kind == "webapi" else "AF SDK"
-    if conn.note:
-        st.toast(conn.note)
-    return series, configs, f"{server} · {len(refs)} points · {via}"
+    return series, configs, f"{ss.pi_server.strip()} · {len(refs)} points · {via}"
+
+
+def _set_picked(names):
+    ss.pi_picked = names
+    ss.pi_table_v = ss.get("pi_table_v", 0) + 1
+
+
+def _point_picker(found):
+    """The PI search results as a table to tick points in. Names are long, so this lives in the main area."""
+    picked = set(ss.get("pi_picked", []))
+    st.markdown(f"#### Points found in PI · {len(picked)} of {len(found)} ticked")
+    b1, b2, _ = st.columns([1, 1, 5])
+    b1.button("Tick all", key="pi_pick_all", use_container_width=True, on_click=_set_picked, args=(list(found),))
+    b2.button("Clear", key="pi_pick_none", use_container_width=True, on_click=_set_picked, args=([],))
+    table = pd.DataFrame({"Read": [t in picked for t in found], "Tag": list(found),
+                          "Description": [r.descriptor for r in found.values()],
+                          "Units": [r.engunits for r in found.values()]})
+    edited = st.data_editor(table, key=f"pi_table_{ss.get('pi_table_v', 0)}", hide_index=True, use_container_width=True,
+                            disabled=["Tag", "Description", "Units"], height=min(40 + 35 * len(table), 460),
+                            column_config={"Read": st.column_config.CheckboxColumn(width="small")})
+    now = edited.loc[edited["Read"], "Tag"].tolist()
+    if set(now) != picked:
+        ss.pi_picked = now
+        st.rerun()  # so the sidebar's Read button shows the new count
+
+
+def _pi_defaults():
+    """Fill the PI fields from the saved settings (`pict pi config`) the first time the page opens."""
+    if "pi_server" in ss:
+        return
+    from pi_compression_tuner.settings import PISettings, load_settings
+    try:
+        saved = load_settings()
+    except ValueError:
+        saved = PISettings()
+    for k, v in vars(saved).items():
+        ss.setdefault(f"pi_{k}", v)
 
 
 with st.sidebar:
@@ -120,31 +188,64 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Could not read the files: {e}")
     else:
+        _pi_defaults()
         server = st.text_input("Data Archive", key="pi_server")
         source = st.selectbox("Connect through", ["auto", "webapi", "afsdk"], key="pi_source",
                               format_func={"auto": "PI Web API, then AF SDK", "webapi": "PI Web API only",
                                            "afsdk": "AF SDK only"}.get)
-        url = st.text_input("PI Web API URL", placeholder="https://pihost/piwebapi", key="pi_url",
-                            disabled=source == "afsdk")
-        tags_text = st.text_area("Tags, one per line", key="pi_tags", height=90)
-        name_filter = st.text_input("or a tag filter", placeholder="FIC*", key="pi_filter")
+        st.text_input("PI Web API URL", placeholder="https://pihost/piwebapi", key="pi_url", disabled=source == "afsdk")
+        with st.expander("Connection options"):
+            st.selectbox("Web API sign-in", ["kerberos", "basic", "anonymous"], key="pi_auth",
+                         help="basic reads PI_WEBAPI_USER and PI_WEBAPI_PASSWORD from the environment.")
+            st.checkbox("Check TLS certificate", key="pi_verify")
+            st.text_input("CA certificate file (PEM)", key="pi_ca_bundle", help="For an internal certificate authority.")
+            st.text_input("AF SDK folder", key="pi_afsdk_dir")
+            st.number_input("Most search results", 1, 5000, 200, key="pi_limit")
+            if st.button("Save as my default connection", key="pi_save", use_container_width=True):
+                from pi_compression_tuner.settings import save_settings
+                try:
+                    st.success(f"Saved to {save_settings(_pi_settings())}")
+                except OSError as e:
+                    st.error(f"Could not save the settings: {e}")
+
+        st.markdown("**Points**")
+        with st.form("pi_search_form", border=False):
+            st.text_input("Search tag names", placeholder="FIC or FIC1*", key="pi_search",
+                          help="A word matches anywhere in the name. Use * and ? for PI's own name filter.")
+            search_clicked = st.form_submit_button("Search PI", key="pi_search_go", use_container_width=True)
+        if search_clicked:
+            if not (server.strip() and ss.pi_search.strip()):
+                st.warning("Enter the Data Archive and a search first.")
+            else:
+                try:
+                    _search_pi()
+                except Exception as e:
+                    st.error(f"Could not search PI: {e}")
+        found = ss.get("pi_found", {})
+        if found:
+            st.caption(f"{len(found)} found. Tick the points to read in the table on the right.")
+        with st.expander("Or paste tag names"):
+            st.text_area("One per line", key="pi_tags", height=90, label_visibility="collapsed")
         c1, c2 = st.columns(2)
         start = c1.text_input("Start", "*-7d", key="pi_start")
         end = c2.text_input("End", "*", key="pi_end")
-        with st.expander("Connection options"):
-            auth = st.selectbox("Web API sign-in", ["kerberos", "basic", "anonymous"], key="pi_auth",
-                                help="basic reads PI_WEBAPI_USER and PI_WEBAPI_PASSWORD from the environment.")
-            verify = st.checkbox("Check TLS certificate", value=True, key="pi_verify")
-            afsdk_dir = st.text_input("AF SDK folder", key="pi_afsdk_dir")
-            limit = st.number_input("Most points", 1, 5000, 100, key="pi_limit")
+        pasted = [t.strip() for t in ss.get("pi_tags", "").splitlines() if t.strip()]
+        picked = [t for t in ss.get("pi_picked", []) if t in found]
+        n = len(dict.fromkeys(picked + pasted))
         st.caption("Reads archived values: right for points whose compression is off or very tight. "
                    "For the rest, record with `pict pi record` and load the CSV files.")
-        if st.button("Read from PI", type="primary", disabled=not server, key="load_pi", use_container_width=True):
+        if st.button(f"Read {n} point{'s' if n != 1 else ''} from PI" if n else "Read from PI", type="primary",
+                     disabled=not (server.strip() and n), key="load_pi", use_container_width=True):
             try:
-                tags = [t.strip() for t in tags_text.splitlines() if t.strip()]
-                ss.series, ss.configs, ss.source_note = _load_pi(server, source, url, auth, verify, afsdk_dir,
-                                                                 tags, name_filter, int(limit), start, end)
+                conn = _pi_connection()
+                refs = [found[t] for t in picked] + [conn.source.point(server.strip(), t) for t in pasted if t not in picked]
+                ss.series, ss.configs, ss.source_note = _load_pi(refs, start, end)
                 _new_data()
+                empty = [t for t, sr in ss.series.items() if len(sr) == 0]
+                if empty:
+                    st.warning(f"{len(empty)} of {len(ss.series)} points came back with no numeric values between "
+                               f"{start} and {end}: {', '.join(empty[:5])}{' …' if len(empty) > 5 else ''}. "
+                               "Check them in PI, or compare with `pict pi check --tag NAME`.")
             except Exception as e:
                 st.error(f"Could not read from PI: {e}")
 
@@ -184,6 +285,13 @@ if run and ss.series is not None:
 
 st.markdown(style.header(ss.source_note), unsafe_allow_html=True)
 
+if ss.origin == "PI server" and ss.get("pi_found"):
+    if ss.series is None:
+        _point_picker(ss.pi_found)
+    else:
+        with st.expander(f"Points found in PI ({len(ss.pi_found)})"):
+            _point_picker(ss.pi_found)
+
 if ss.series is None:
     st.markdown(style.steps([
         ("Load data", "Use the sidebar: demo data, CSV files from a recording, or archived values from PI."),
@@ -210,6 +318,9 @@ def effective(r):
 
 results = [effective(r) for r in ss.results]
 by_tag = {r.tag: r for r in results}
+# Points without a proposal (too few events, not moving) go last in the point picker.
+NO_PROPOSAL = (Classification.TOO_FEW_EVENTS.value, Classification.NOT_MOVING.value)
+tag_order = sorted(by_tag, key=lambda t: by_tag[t].classification.value in NO_PROPOSAL)
 
 tab_overview, tab_point, tab_export = st.tabs(["Overview", "Point detail", "Export"], key="main_tab", on_change="rerun")
 
@@ -267,9 +378,16 @@ with tab_overview:
                 unsafe_allow_html=True)
 
     st.markdown(style.section("Verdicts"), unsafe_allow_html=True)
+    verdicts_found = list(dict.fromkeys(r.classification.value for r in results))
+    # Rows with no proposal are blank across the table, so leave them out unless they are all there is.
+    default_shown = [c for c in verdicts_found if c not in NO_PROPOSAL] or verdicts_found
     shown = st.multiselect("Show verdicts", [c.value for c in Classification], label_visibility="collapsed",
-                           default=list(dict.fromkeys(r.classification.value for r in results)), key="class_filter",
+                           default=default_shown, key="class_filter",
                            placeholder="Filter by verdict")
+    hidden = sum(r.classification.value in NO_PROPOSAL and r.classification.value not in shown for r in results)
+    if hidden:
+        st.markdown(f'<p class="pct-note">{hidden} points with too few events or no movement have no proposal and '
+                    "are hidden. Add them in the filter to list them.</p>", unsafe_allow_html=True)
     df = results_frame(results)
     df.insert(0, "Export", [ss.export_choice.get(r.tag, r.changes and (r.ready_to_export or r.tag in ss.adopted))
                             for r in results])
@@ -304,7 +422,7 @@ with tab_overview:
 # --- Point detail ---------------------------------------------------------
 
 with tab_point:
-    tags = list(by_tag)
+    tags = tag_order
 
     def _step(d):
         ss.detail_tag = tags[(tags.index(ss.get("detail_tag", tags[0])) + d) % len(tags)]
@@ -465,22 +583,31 @@ with tab_point:
             t1.markdown(style.section("Trend"), unsafe_allow_html=True)
             view = t2.segmented_control("View", ["Whole period", "Largest miss"], default="Whole period",
                                         key=f"view_{tag}", label_visibility="collapsed") or "Whole period"
+            # Send the full-resolution trend (WebGL draws it quickly) so zooming and panning show real
+            # events; only very long series are thinned, and then Largest miss keeps a full-resolution
+            # stretch of context around the miss instead.
+            full = len(s.t) <= TREND_FULL_RES
             if view == "Largest miss":
                 k = int(np.argmax(err))
                 half = run_opts.window_s / 2
-                w = (s.t >= s.t[k] - half) & (s.t <= s.t[k] + half)
-                tt, vv = s.t[w], s.v[w]
-                xt, xv = s.t[w], excess[w]
+                lo, hi = s.t[k] - half, s.t[k] + half
+                w = (s.t >= lo) & (s.t <= hi)
+                if full:
+                    keep = np.ones(len(s.t), bool)
+                else:
+                    span = TREND_FULL_RES / 2 * np.median(np.diff(s.t)) if len(s.t) > 1 else half
+                    keep = (s.t >= s.t[k] - span) & (s.t <= s.t[k] + span)
+                tt, vv, xt, xv = s.t[keep], s.v[keep], s.t[keep], excess[keep]
             else:
-                tt, vv = envelope(s.t, s.v, 3000)
-                xt, xv = envelope(s.t, excess, 1500)
+                tt, vv = (s.t, s.v) if full else envelope(s.t, s.v, 3000)
+                xt, xv = (s.t, excess) if full else envelope(s.t, excess, 1500)
                 w = None
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.8, 0.2], vertical_spacing=0.05)
-            fig.add_scatter(x=ts(tt), y=vv, name="Input", line=dict(color=INK["input"], width=1), row=1, col=1)
+            fig.add_trace(go.Scattergl(x=ts(tt), y=vv, name="Input", line=dict(color=INK["input"], width=1)), row=1, col=1)
             for name, cfg, color in lines:
                 at, av = archives[name]
                 if w is not None:
-                    # one event either side so the segments into the window are drawn
+                    # one event either side so the segments into the shown stretch are drawn
                     i0 = max(int(np.searchsorted(at, tt[0])) - 1, 0)
                     i1 = int(np.searchsorted(at, tt[-1], side="right")) + 1
                     at, av = at[i0:i1], av[i0:i1]
@@ -488,10 +615,11 @@ with tab_point:
                     mode, mk = "lines+markers", dict(size=size, color=color, line=dict(width=1, color="white"))
                 else:
                     mode, mk = "lines", None
-                    at, av = envelope(at, av, 3000)
-                fig.add_scatter(x=ts(at), y=av, name=name, mode=mode, marker=mk, row=1, col=1,
-                                line=dict(color=color, width=1.8 if name != "Archive now" else 1.3,
-                                          shape="hv" if cfg.step else "linear"))
+                    if len(at) > TREND_FULL_RES:
+                        at, av = envelope(at, av, 3000)
+                fig.add_trace(go.Scattergl(x=ts(at), y=av, name=name, mode=mode, marker=mk,
+                                           line=dict(color=color, width=1.8 if name != "Archive now" else 1.3,
+                                                     shape="hv" if cfg.step else "linear")), row=1, col=1)
             pending = sorted(ss.moments.get(tag, []))
             mi = moment_index(s, pending)
             if w is not None:
@@ -503,8 +631,8 @@ with tab_point:
                 fig.add_hline(y=lim, line=dict(color=INK["probe"], width=1, dash="dash"), row=1, col=1,
                               annotation_text=f"Alarm {lim:g}", annotation_font_color=INK["probe"],
                               annotation_position="top left")
-            fig.add_scatter(x=ts(xt), y=xv, name="Detail lost", fill="tozeroy", fillcolor="rgba(208,87,74,0.25)",
-                            line=dict(color=INK["loss"], width=1), row=2, col=1)
+            fig.add_trace(go.Scattergl(x=ts(xt), y=xv, name="Detail lost", fill="tozeroy", fillcolor="rgba(208,87,74,0.25)",
+                                       line=dict(color=INK["loss"], width=1)), row=2, col=1)
             # Plotly reports a click for selection only on markers and only with closest-point hover,
             # so the trend lines get invisible markers to make them clickable for key moments.
             for tr in fig.data:
@@ -516,9 +644,10 @@ with tab_point:
             if w is None:
                 fig.update_xaxes(range=[ts(s.t[0]), ts(s.t[-1])])  # no padding from the invisible markers
             else:
-                pad = max(np.ptp(vv), r.noise, 1e-9) * 0.15
-                fig.update_xaxes(range=[ts(tt[0]), ts(tt[-1])])
-                fig.update_yaxes(range=[vv.min() - pad, vv.max() + pad], row=1, col=1)
+                wv = s.v[w]
+                pad = max(np.ptp(wv), r.noise, 1e-9) * 0.15
+                fig.update_xaxes(range=[ts(lo), ts(hi)])
+                fig.update_yaxes(range=[wv.min() - pad, wv.max() + pad], row=1, col=1)
             picked = st.plotly_chart(fig, use_container_width=True, config=PLOT_CONFIG, key=f"trend_{tag}_{ss.km_v}",
                                      on_select="rerun", selection_mode="points")
             # A click on the trend marks a key moment at the nearest input event. The lines overlap,
@@ -535,7 +664,8 @@ with tab_point:
                     "Archive at probe": "the probe's archive"}[judged_name]
             st.markdown(f'<p class="pct-note">The lower strip shows where {what} strays from the input by more than the '
                         "noise band; flat means no real detail is lost. <b>Largest miss</b> zooms to one scoring window "
-                        "around the biggest error, with each archived event marked.</p>", unsafe_allow_html=True)
+                        "around the biggest error, with each archived event marked. Zoom and pan freely: every event is "
+                        "drawn; double-click the chart to see the whole period.</p>", unsafe_allow_html=True)
 
             st.markdown(style.section("Key moments"), unsafe_allow_html=True)
             k1, k4, k2, k3 = st.columns([7, 3, 2, 3], vertical_alignment="bottom")

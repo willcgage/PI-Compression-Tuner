@@ -28,7 +28,8 @@ class PIWebAPI:
 
     ``auth`` is ``"kerberos"`` (Windows integrated / Negotiate), ``"basic"`` (reads
     ``PI_WEBAPI_USER`` and ``PI_WEBAPI_PASSWORD`` from the environment) or ``"anonymous"``.
-    ``verify`` is passed to requests: True, False, or a CA bundle path.
+    ``verify`` is passed to requests: True, False, or a CA bundle path. True checks against the
+    operating system's trust store.
     """
 
     def __init__(self, base_url: str, auth: str = "kerberos", verify: bool | str = True, timeout: float = 60.0,
@@ -37,13 +38,15 @@ class PIWebAPI:
         self.timeout = timeout
         self.s = session or requests.Session()
         self.s.verify = verify
+        if verify is True and session is None:
+            _use_system_trust()
         self.s.headers.update({"Accept": "application/json", "X-Requested-With": "pi-compression-tuner"})
         if session is None:
             self.s.auth = _make_auth(auth)
 
     # -- low level -------------------------------------------------------
-    def _get(self, path: str, **params) -> dict:
-        r = self.s.get(f"{self.base}/{path.lstrip('/')}", params=params, timeout=self.timeout)
+    def _get(self, endpoint: str, /, **params) -> dict:
+        r = self.s.get(f"{self.base}/{endpoint.lstrip('/')}", params=params, timeout=self.timeout)
         r.raise_for_status()
         return r.json()
 
@@ -62,8 +65,10 @@ class PIWebAPI:
         page = min(max_count, 1000)
         while len(out) < max_count:
             items = self._get(f"dataservers/{ds}/points", nameFilter=name_filter, startIndex=start, maxCount=page,
-                              selectedFields="Items.Name;Items.WebId;Items.Path").get("Items", [])
-            out += [PointRef(i["Name"], i["WebId"], i.get("Path", "")) for i in items]
+                              selectedFields="Items.Name;Items.WebId;Items.Path;Items.Descriptor;Items.EngineeringUnits"
+                              ).get("Items", [])
+            out += [PointRef(i["Name"], i["WebId"], i.get("Path", ""), i.get("Descriptor") or "",
+                             i.get("EngineeringUnits") or "") for i in items]
             if len(items) < page:
                 break
             start += page
@@ -134,6 +139,16 @@ class PIWebAPI:
         except KeyboardInterrupt:
             pass  # stop early and keep what was recorded
         return {name: series_from_items(items) for name, items in events.items()}
+
+
+def _use_system_trust() -> None:
+    """Check certificates against the operating system's trust store (on Windows, the one the
+    browser uses) instead of only certifi's public list, so a site's internal CA is accepted."""
+    try:
+        import truststore
+    except ImportError:
+        return
+    truststore.inject_into_ssl()
 
 
 def _make_auth(kind: str):

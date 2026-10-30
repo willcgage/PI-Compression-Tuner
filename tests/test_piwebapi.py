@@ -76,3 +76,11 @@ def test_series_drops_bad_and_digital_values():
 def test_missing_attributes_use_defaults():
     c = config_from_attributes({"compdev": None})
     assert c.compmax == 28800.0 and c.compressing
+
+
+def test_lookups_by_path():
+    api = _api({"dataservers": lambda p: {"WebId": "DS1"} if p == {"path": "\\\\SRV"} else {},
+                "points": lambda p: {"Name": "A", "WebId": "W1", "Path": p["path"]}})
+    api.check("SRV")
+    ref = api.point("SRV", "A")
+    assert (ref.name, ref.web_id, ref.path) == ("A", "W1", "\\\\SRV\\A")

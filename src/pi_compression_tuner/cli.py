@@ -102,24 +102,44 @@ def demo(out_dir, days, seed):
 
 # --- PI (read-only) ----------------------------------------------------
 
-def _connect(server, source, url, auth, ca_bundle, insecure, afsdk_dir):
+def _settings(server, source, url, auth, ca_bundle, insecure, afsdk_dir):
+    """Command-line options over the saved settings (`pict pi config`)."""
+    from .settings import load_settings
+    try:
+        s = load_settings()
+    except ValueError as e:
+        raise click.UsageError(str(e))
+    for k, v in {"server": server, "source": source, "url": url, "auth": auth,
+                 "ca_bundle": ca_bundle, "afsdk_dir": afsdk_dir}.items():
+        if v:
+            setattr(s, k, v)
+    if insecure:
+        s.verify = False
+    if not s.server:
+        raise click.UsageError("give --server, or save one with: pict pi config --server NAME")
+    return s
+
+
+def _connect(*options):
     from .sources.connect import connect
-    verify = False if insecure else (ca_bundle or True)
-    conn = connect(server, source=source, url=url, auth=auth, verify=verify, afsdk_dir=afsdk_dir)
+    s = _settings(*options)
+    conn = connect(s.server, source=s.source, url=s.url or None, auth=s.auth, verify=s.tls_verify(),
+                   afsdk_dir=s.afsdk_dir or None)
     click.echo(conn.note or f"Connected through {'the PI Web API' if conn.kind == 'webapi' else 'AF SDK'}.", err=True)
     return conn.source
 
 
 def _pi_options(f):
+    """Connection options. Any left out come from the saved settings (`pict pi config`)."""
     f = click.option("--afsdk-dir", type=click.Path(file_okay=False), help="Folder holding OSIsoft.AFSDK.dll, if not the default.")(f)
     f = click.option("--insecure", is_flag=True, help="Skip TLS certificate checks (PI Web API).")(f)
     f = click.option("--ca-bundle", type=click.Path(exists=True, dir_okay=False), help="CA bundle for the PI Web API certificate.")(f)
-    f = click.option("--auth", type=click.Choice(["kerberos", "basic", "anonymous"]), default="kerberos", show_default=True,
-                     help="PI Web API auth. basic reads PI_WEBAPI_USER and PI_WEBAPI_PASSWORD from the environment.")(f)
+    f = click.option("--auth", type=click.Choice(["kerberos", "basic", "anonymous"]),
+                     help="PI Web API sign-in (saved setting, else kerberos). basic reads PI_WEBAPI_USER and PI_WEBAPI_PASSWORD from the environment.")(f)
     f = click.option("--url", help="PI Web API base URL, e.g. https://pivision/piwebapi")(f)
-    f = click.option("--source", type=click.Choice(["auto", "webapi", "afsdk"]), default="auto", show_default=True,
-                     help="auto tries the PI Web API, then falls back to AF SDK.")(f)
-    f = click.option("--server", required=True, help="PI Data Archive name.")(f)
+    f = click.option("--source", type=click.Choice(["auto", "webapi", "afsdk"]),
+                     help="auto (the default) tries the PI Web API, then falls back to AF SDK.")(f)
+    f = click.option("--server", help="PI Data Archive name (saved setting if left out).")(f)
     return f
 
 
@@ -135,6 +155,68 @@ def pi():
     """Read points, settings and data from PI (PI Web API, falling back to AF SDK). Read-only."""
 
 
+@pi.command("config")
+@_pi_options
+@click.option("--secure", is_flag=True, help="Turn TLS certificate checks back on.")
+def config_cmd(server, source, url, auth, ca_bundle, insecure, afsdk_dir, secure):
+    """Show the saved PI connection settings, or save the options given, so later commands and the UI can leave them out."""
+    from .settings import load_settings, save_settings, settings_path
+    s = load_settings()
+    given = {"server": server, "source": source, "url": url, "auth": auth, "ca_bundle": ca_bundle, "afsdk_dir": afsdk_dir}
+    changed = False
+    for k, v in given.items():
+        if v:
+            setattr(s, k, v)
+            changed = True
+    if insecure or secure:
+        s.verify, changed = bool(secure), True
+    if changed:
+        click.echo(f"Saved {save_settings(s)}")
+    else:
+        click.echo(f"Settings file: {settings_path()}")
+    for k, v in vars(s).items():
+        click.echo(f"  {k:10} {v}")
+
+
+@pi.command()
+@_pi_options
+@click.option("--filter", "name_filter", default="*", show_default=True, help="Tag name filter for the sample lookup.")
+@click.option("--tag", help="A tag to read settings and a day's archive event count for.")
+def check(server, source, url, auth, ca_bundle, insecure, afsdk_dir, name_filter, tag):
+    """Test each PI source on its own and report what works. Reads only."""
+    from .sources.afsdk import AFSDK
+    from .sources.piwebapi import PIWebAPI
+    s = _settings(server, source, url, auth, ca_bundle, insecure, afsdk_dir)
+    server = s.server
+    tries = []
+    if s.source in ("auto", "webapi"):
+        if s.url:
+            tries.append(("PI Web API", lambda: PIWebAPI(s.url, auth=s.auth, verify=s.tls_verify())))
+        else:
+            click.echo("PI Web API: skipped, no --url given.")
+    if s.source in ("auto", "afsdk"):
+        tries.append(("AF SDK", lambda: AFSDK(s.afsdk_dir or None)))
+    working = 0
+    for label, make in tries:
+        try:
+            src = make()
+            src.check(server)
+            names = [r.name for r in src.find_points(server, name_filter, max_count=5)]
+            click.echo(f"{label}: OK. Found {server}; sample points matching {name_filter!r}: {', '.join(names) or 'none'}.")
+            if tag:
+                ref = src.point(server, tag)
+                a = src.attributes(ref)
+                settings = ", ".join(f"{k}={a.get(k.lower())}" for k in ("ExcDev", "CompDev", "Compressing", "Span", "PointType"))
+                n_read = len(src.recorded(ref, "*-1d", "*"))
+                click.echo(f"  {tag}: {settings}; {src.event_count(ref, '*-1d', '*')} archive events in the last day, "
+                           f"{n_read} numeric values read.")
+            working += 1
+        except Exception as e:  # report every failure, then carry on to the next source
+            click.echo(f"{label}: failed ({type(e).__name__}: {e})")
+    if not working:
+        raise SystemExit(1)
+
+
 @pi.command()
 @_pi_options
 @click.option("--filter", "name_filter", default="*", show_default=True, help="Tag name filter.")
@@ -145,6 +227,7 @@ def pi():
 def triage(server, source, url, auth, ca_bundle, insecure, afsdk_dir, name_filter, start, end, limit, out_path):
     """Rank points by archive events, the cheap first pass for finding noisy or empty points."""
     src = _connect(server, source, url, auth, ca_bundle, insecure, afsdk_dir)
+    server = _settings(server, source, url, auth, ca_bundle, insecure, afsdk_dir).server
     refs = src.find_points(server, name_filter, max_count=limit)
     rows = []
     with click.progressbar(refs, label="Counting", file=sys.stderr) as it:
@@ -169,6 +252,7 @@ def record(server, source, url, auth, ca_bundle, insecure, afsdk_dir, tags, name
     """Record the snapshot stream (after exception, before compression) for later `pict analyze --mode snapshot`."""
     from .sources.ops import configs_frame, series_frame
     src = _connect(server, source, url, auth, ca_bundle, insecure, afsdk_dir)
+    server = _settings(server, source, url, auth, ca_bundle, insecure, afsdk_dir).server
     refs = _resolve(src, server, tags, name_filter, limit)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -191,6 +275,7 @@ def fetch(server, source, url, auth, ca_bundle, insecure, afsdk_dir, tags, name_
     (compression off or very tight); otherwise use `record`."""
     from .sources.ops import configs_frame, fetch_recorded, series_frame
     src = _connect(server, source, url, auth, ca_bundle, insecure, afsdk_dir)
+    server = _settings(server, source, url, auth, ca_bundle, insecure, afsdk_dir).server
     refs = _resolve(src, server, tags, name_filter, limit)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -221,7 +306,8 @@ def ui(port, host):
     app = Path(__file__).parent / "ui" / "app.py"
     raise SystemExit(subprocess.call([sys.executable, "-m", "streamlit", "run", str(app),
                                       "--server.port", str(port), "--server.address", host,
-                                      "--browser.gatherUsageStats", "false", "--client.toolbarMode", "minimal",
+                                      "--browser.gatherUsageStats", "false", "--server.showEmailPrompt", "false",
+                                      "--client.toolbarMode", "minimal",
                                       "--theme.base", "light", "--theme.primaryColor", "#13708a",
                                       "--theme.textColor", "#17222a", "--theme.secondaryBackgroundColor", "#f4f7f8"]))
 

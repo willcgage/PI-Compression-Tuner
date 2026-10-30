@@ -1,0 +1,123 @@
+PI Compression Tuner: site test bundle for Windows
+==================================================
+
+This folder holds the tuner, its own private copy of Python, and everything else
+it needs. It does not need internet access, an installer, or admin rights, and it
+does not change anything outside its own folder and its work folder.
+
+The tuner only READS from PI. It never writes values or point settings. Proposed
+changes come out as a PI Builder sheet that you review and publish yourself.
+
+
+Requirements
+------------
+- Windows 10, Windows 11, or Windows Server 2016 or later, 64-bit.
+- One of these, to reach PI:
+    * the PI Web API (you need its URL, for example https://pihost/piwebapi), or
+    * PI AF Client installed on this machine (for the AF SDK fallback).
+- About 600 MB of disk space.
+
+
+1. Install
+----------
+1. Copy the zip to the machine.
+2. If the zip came from the internet or email, right-click it, choose Properties,
+   tick "Unblock" and click OK. Otherwise Windows may block the launchers.
+3. Extract it to a short path, such as C:\PICT or C:\Tools.
+   (Deep folders can hit Windows' 260-character path limit.)
+   You should then have C:\PICT\PI-Compression-Tuner-<version>-win64\ with this file in it.
+
+To update to a newer bundle, delete the old folder and unzip the new zip into a new,
+empty folder. Don't unzip over an old copy: leftover files can mix the two versions.
+Your work folder and saved connection are kept. The self-test checks that every file
+of the bundle is present and shows which build you have.
+
+If the self-test reports missing files, the download or the extract was incomplete.
+Compare the zip's checksum with the .sha256 file from the release:
+    certutil -hashfile PI-Compression-Tuner-<version>-win64.zip SHA256
+
+To uninstall, delete that folder and the work folder below.
+
+
+2. Self-test (no PI needed)
+---------------------------
+Double-click "Run self-test.cmd". It checks each component, analyzes synthetic
+demo data and opens the demo report. "AF SDK: not found" is only a problem if this
+machine has no PI Web API access either.
+
+The tuner writes its files to:  Documents\PI Compression Tuner
+(set the PICT_WORK environment variable to use another folder).
+
+
+3. Save the connection and check it
+-----------------------------------
+Double-click "PI command prompt.cmd", then save your connection once (with your names):
+
+    pict pi config --server PISRV --url https://pihost/piwebapi --auth anonymous
+
+Every later command, and the UI, starts from these settings, so you can leave them
+out. Run "pict pi config" on its own to see them. No passwords are stored. Then:
+
+    pict pi check --tag SINUSOID
+
+It tries the PI Web API and the AF SDK separately and reports what works and why
+anything failed. Useful options (for config, check, or any pict pi command):
+    --auth basic        PI Web API basic sign-in; set PI_WEBAPI_USER and PI_WEBAPI_PASSWORD first:
+                          set PI_WEBAPI_USER=DOMAIN\me
+                          set PI_WEBAPI_PASSWORD=...
+    --ca-bundle FILE    the internal CA certificate (PEM) if TLS checks fail
+    --source afsdk      use only the AF SDK (also: --source webapi)
+    --afsdk-dir DIR     the folder holding OSIsoft.AFSDK.dll, if not the standard one
+
+
+4. Try it on real points
+------------------------
+In the PI command prompt:
+
+  a) Triage: rank points by archive events over the last day.
+       pict pi triage --filter "FIC*" --start "*-1d"
+     Writes triage.csv.
+
+  b) Quick look from the archive (best for points with compression off or very tight).
+       pict pi fetch --tag FIC101.PV --tag TIC204.PV --start "*-2d" --out fetch
+       pict analyze fetch\data.csv --config fetch\config.csv --mode snapshot --server PISRV --out results
+     Open results\report.html.
+
+  c) The real test: record the snapshot stream for a few hours, then analyze it.
+       pict pi record --filter "FIC*" --limit 20 --duration 4h --out capture
+       pict analyze capture\data.csv --config capture\config.csv --mode snapshot --server PISRV --out results
+     Ctrl+C stops recording early and keeps what was recorded. Recording changes no
+     point settings; through the PI Web API it registers a stream-updates marker.
+
+
+5. The UI
+---------
+Double-click "Open tuner UI.cmd". It opens http://localhost:8501 in your browser.
+Close the black window to stop it. In the sidebar, choose "PI server". The server and
+URL are filled in from your saved connection. Search tag names (a word matches
+anywhere in the name; * and ? use PI's own filter), tick the points you want in the
+table, and press Read. You can also load a capture folder's CSV files instead.
+
+
+What to send back
+-----------------
+- The text printed by "pict pi check" (and the self-test, if it failed).
+- results\results.csv and results\report.html from one or two runs.
+- Any error message, with the command you ran.
+Check your site's rules before sending tag names or data off site.
+
+
+Troubleshooting
+---------------
+- "Windows protected your PC": click More info, then Run anyway, or Unblock the zip (step 1.2).
+- PI Web API 401: Kerberos sign-in was refused. Try --auth basic, or check that the
+  Web API allows Kerberos/NTLM for your account.
+- SSL or certificate errors: the tuner trusts the same certificates Windows does (the
+  ones your browser accepts). If the PI Web API page opens in the browser without a
+  warning but the tuner still fails, export the site's root CA as a Base-64 (PEM) file
+  and pass it with --ca-bundle, or save it once with pict pi config --ca-bundle FILE.
+  --insecure skips the check, for a quick test only.
+- AF SDK not found: install PI AF Client, or pass --afsdk-dir. The server must be in
+  this machine's known servers table (open PI System Explorer or PI SMT once to add it).
+- The UI does not open: browse to http://localhost:8501 yourself. If port 8501 is taken,
+  run "pict ui --port 8502" in the PI command prompt.
