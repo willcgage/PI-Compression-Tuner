@@ -12,7 +12,8 @@ from ..models import PointConfig, Series
 class PointRef:
     """A PI Point found through a source. ``web_id`` is the PI Web API WebId; AF SDK leaves it empty.
 
-    ``descriptor`` and ``engunits`` are filled in by searches, to help pick points; they are not part of its identity.
+    ``descriptor``, ``engunits``, ``pointtype`` and ``pointclass`` are filled in by searches, to help pick points
+    and match templates; they are not part of its identity.
     """
 
     name: str
@@ -20,6 +21,8 @@ class PointRef:
     path: str = ""
     descriptor: str = field(default="", compare=False)
     engunits: str = field(default="", compare=False)
+    pointtype: str = field(default="", compare=False)
+    pointclass: str = field(default="", compare=False)
 
 
 class PISource(Protocol):

@@ -40,11 +40,16 @@ def results_frame(results: list[TuneResult]) -> pd.DataFrame:
             row["EventChangePercent"] = 100.0 * (rec.archived_events - cur.archived_events) / cur.archived_events
         else:
             row["EventChangePercent"] = None
+        b = r.baseline
+        row["Template"] = r.template
+        row.update({"TemplateExcDev": b.excdev if b else None, "TemplateCompDev": b.compdev if b else None,
+                    "TemplateCompMax": b.compmax if b else None, "TemplateExcMax": b.excmax if b else None})
         row["Notes"] = " ".join(r.notes)
         rows.append(row)
     df = pd.DataFrame(rows)
     # Points without settings (too few events, not moving) leave gaps: keep the columns numeric, with NaN.
-    numeric = [c for c in df.columns if c.startswith(("Current", "Recommended")) or c == "EventChangePercent"]
+    numeric = [c for c in df.columns if c.startswith(("Current", "Recommended", "TemplateE", "TemplateC"))
+               or c == "EventChangePercent"]
     df[numeric] = df[numeric].apply(pd.to_numeric, errors="coerce").astype(float)
     return df
 

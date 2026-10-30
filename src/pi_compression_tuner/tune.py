@@ -92,6 +92,8 @@ class TuneResult:
     input_events: int
     ready_to_export: bool = False
     notes: list = field(default_factory=list)
+    template: str = ""                        # the point template that matched, if any
+    baseline: PointConfig | None = None       # that template's settings for this point
 
     @property
     def changes(self) -> bool:

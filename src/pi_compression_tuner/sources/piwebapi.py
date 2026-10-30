@@ -19,7 +19,7 @@ from .base import PointRef
 
 CONFIG_ATTRIBUTES = (
     "excdev", "excmin", "excmax", "compdev", "compmin", "compmax",
-    "compressing", "step", "zero", "span", "pointtype", "descriptor", "engunits",
+    "compressing", "step", "zero", "span", "pointtype", "descriptor", "engunits", "ptclassname", "pointsource",
 )
 
 
@@ -65,10 +65,11 @@ class PIWebAPI:
         page = min(max_count, 1000)
         while len(out) < max_count:
             items = self._get(f"dataservers/{ds}/points", nameFilter=name_filter, startIndex=start, maxCount=page,
-                              selectedFields="Items.Name;Items.WebId;Items.Path;Items.Descriptor;Items.EngineeringUnits"
-                              ).get("Items", [])
+                              selectedFields="Items.Name;Items.WebId;Items.Path;Items.Descriptor;Items.EngineeringUnits;"
+                                             "Items.PointType;Items.PointClass").get("Items", [])
             out += [PointRef(i["Name"], i["WebId"], i.get("Path", ""), i.get("Descriptor") or "",
-                             i.get("EngineeringUnits") or "") for i in items]
+                             i.get("EngineeringUnits") or "", str(i.get("PointType") or ""),
+                             i.get("PointClass") or "") for i in items]
             if len(items) < page:
                 break
             start += page

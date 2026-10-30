@@ -21,7 +21,7 @@ DEFAULT_ASSEMBLY_DIRS = (
     r"C:\Program Files\PIPC\AF\PublicAssemblies\4.0",
 )
 _ATTRS = ("excdev", "excmin", "excmax", "compdev", "compmin", "compmax",
-          "compressing", "step", "zero", "span", "pointtype", "descriptor", "engunits")
+          "compressing", "step", "zero", "span", "pointtype", "descriptor", "engunits", "ptclassname", "pointsource")
 
 
 def load_afsdk(assembly_dir: str | None = None):
@@ -104,8 +104,9 @@ class AFSDK:
     def _pt(self, ref: PointRef):
         return self._points[ref.path]
 
-    def _ref(self, server: str, pt, descriptor: str = "", engunits: str = "") -> PointRef:
-        ref = PointRef(pt.Name, "", f"\\\\{server}\\{pt.Name}", descriptor, engunits)
+    def _ref(self, server: str, pt, descriptor: str = "", engunits: str = "", pointtype: str = "",
+             pointclass: str = "") -> PointRef:
+        ref = PointRef(pt.Name, "", f"\\\\{server}\\{pt.Name}", descriptor, engunits, pointtype, pointclass)
         self._points[ref.path] = pt
         return ref
 
@@ -114,7 +115,7 @@ class AFSDK:
 
     def find_points(self, server: str, name_filter: str = "*", max_count: int = 1000) -> list[PointRef]:
         PIPoint = self.sdk["PI"].PIPoint
-        names = ["descriptor", "engunits"]
+        names = ["descriptor", "engunits", "pointtype", "ptclassname"]
         load = None
         if "List" in self.sdk:
             load = self.sdk["List"][self.sdk["System"].String]()
@@ -122,8 +123,7 @@ class AFSDK:
                 load.Add(a)
         out = []
         for pt in PIPoint.FindPIPoints(self._server(server), name_filter, None, load):
-            desc, units = (str(pt.GetAttribute(a) or "") for a in names)
-            out.append(self._ref(server, pt, desc, units))
+            out.append(self._ref(server, pt, *(str(pt.GetAttribute(a) or "") for a in names)))
             if len(out) >= max_count:
                 break
         return out

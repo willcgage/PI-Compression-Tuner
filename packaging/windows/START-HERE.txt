@@ -93,10 +93,12 @@ In the PI command prompt:
 5. The UI
 ---------
 Double-click "Open tuner UI.cmd". It opens http://localhost:8501 in your browser.
-Close the black window to stop it. In the sidebar, choose "PI server". The server and
-URL are filled in from your saved connection. Search tag names (a word matches
-anywhere in the name; * and ? use PI's own filter), tick the points you want in the
-table, and press Read. You can also load a capture folder's CSV files instead.
+Close the black window to stop it. In the sidebar, choose "PI server" and pick the
+server from the list. Servers, the search limit and point templates are set up under
+"Admin settings" at the bottom of the sidebar; a connection saved with pict pi config
+shows up there. Search tag names (a word matches anywhere in the name; * and ? use
+PI's own filter), tick the points you want in the table, and press Read. You can also
+load a capture folder's CSV files instead.
 
 
 What to send back
