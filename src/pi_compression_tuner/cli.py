@@ -15,7 +15,7 @@ from .models import PointConfig
 from .moments import read_moments
 from .report import write_report
 from .sources.csvfiles import read_configs, read_series
-from .tune import TuneOptions, tune_point
+from .tune import TuneOptions
 
 
 def _duration(text: str) -> float:
@@ -49,12 +49,23 @@ def main():
 @click.option("--moments", "moments_path", type=click.Path(exists=True, dir_okay=False),
               help="CSV of key moments (Tag, Timestamp) that each proposal must keep.")
 @click.option("--server", default="", help="Data Archive name to put in the PI Builder Parent column.")
+@click.option("--no-templates", is_flag=True,
+              help="Don't match point templates. By default the saved templates are matched on the settings CSV's "
+                   "Descriptor, EngUnits and PointType columns.")
 @click.option("--out", "out_dir", type=click.Path(file_okay=False), default="out", show_default=True)
 def analyze(data, config_path, mode, target, window, percentile, max_error, max_error_pct_span, excdev_ratio,
-            moments_path, server, out_dir):
+            moments_path, server, no_templates, out_dir):
     """Analyze DATA (CSV) and write results.csv, pibuilder.csv and report.html."""
+    from .settings import load_app_settings
+    from .sources.csvfiles import read_point_info
+    from .templates import tune_with_template
     series = read_series(data)
     configs = read_configs(config_path) if config_path else {}
+    infos = read_point_info(config_path) if config_path and not no_templates else {}
+    try:
+        templates = [] if no_templates else load_app_settings().templates
+    except ValueError as e:
+        raise click.UsageError(str(e))
     moments = read_moments(moments_path) if moments_path else {}
     opts = TuneOptions(target=target, input_mode=mode, window_s=_duration(window), percentile=percentile,
                        max_error=max_error, max_error_pct_span=max_error_pct_span, excdev_ratio=excdev_ratio)
@@ -65,7 +76,8 @@ def analyze(data, config_path, mode, target, window, percentile, max_error, max_
             if cfg is None:
                 click.echo(f"\nNo settings for {tag}; assuming PI defaults.", err=True)
                 cfg = PointConfig()
-            results.append(tune_point(tag, s, cfg, opts, moments=moments.get(tag, ())))
+            results.append(tune_with_template(tag, s, cfg, opts, infos.get(tag), templates,
+                                              moments=moments.get(tag, ())))
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     write_results_csv(results, out / "results.csv")
@@ -83,7 +95,7 @@ def analyze(data, config_path, mode, target, window, percentile, max_error, max_
 @click.option("--seed", type=int, default=1, show_default=True)
 def demo(out_dir, days, seed):
     """Write a synthetic data.csv and config.csv to try `pict analyze` without a PI server."""
-    from .demo import demo_data
+    from .demo import DEMO_INFO, demo_data
     from .sources.ops import series_frame
     series, configs = demo_data(days, seed)
     out = Path(out_dir)
@@ -95,7 +107,8 @@ def demo(out_dir, days, seed):
         return "; ".join(f"{x:g}" for x in b) if isinstance(b, tuple) else b
 
     names = {"alarm_limits": "AlarmLimits"}
-    pd.DataFrame([{"Name": k, **{names.get(a, a.capitalize()): cell(b) for a, b in asdict(c).items()}}
+    pd.DataFrame([{"Name": k, "Descriptor": DEMO_INFO[k]["descriptor"], "EngUnits": DEMO_INFO[k]["engunits"],
+                   **{names.get(a, a.capitalize()): cell(b) for a, b in asdict(c).items()}}
                   for k, c in configs.items()]).to_csv(out / "config.csv", index=False)
     click.echo(f"Wrote {out / 'data.csv'} and {out / 'config.csv'}. Try: pict analyze {out / 'data.csv'} --config {out / 'config.csv'} --mode raw")
 

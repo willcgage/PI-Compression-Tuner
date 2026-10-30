@@ -23,16 +23,17 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from pi_compression_tuner import present
-from pi_compression_tuner.demo import demo_data
+from pi_compression_tuner.demo import demo_data, demo_info
 from pi_compression_tuner.export import pibuilder_frame, results_frame
 from pi_compression_tuner.metrics import reconstruct
 from pi_compression_tuner.models import PointConfig, Series
 from pi_compression_tuner.moments import moment_index, moments_frame, read_moments, suggest_moments
 from pi_compression_tuner.report import envelope, write_report
 from pi_compression_tuner.simulate import simulate_archive
-from pi_compression_tuner.sources.csvfiles import read_configs, read_series
-from pi_compression_tuner.tune import Classification, TuneOptions, evaluate_config, tradeoff_curve, tune_point
-from pi_compression_tuner.ui import style
+from pi_compression_tuner.sources.csvfiles import read_configs, read_point_info, read_series
+from pi_compression_tuner.templates import match, point_info, tune_with_template
+from pi_compression_tuner.tune import Classification, TuneOptions, evaluate_config, tradeoff_curve
+from pi_compression_tuner.ui import admin, style
 from pi_compression_tuner.ui.style import INK, VERDICT_COLOR
 
 WINDOWS = {"15 min": 900, "30 min": 1800, "1 h": 3600, "4 h": 14400}
@@ -42,8 +43,8 @@ PLOT_CONFIG = {"displaylogo": False, "modeBarButtonsToRemove": ["lasso2d", "sele
 st.set_page_config(page_title="PI Compression Tuner", layout="wide", initial_sidebar_state="expanded")
 st.markdown(style.CSS, unsafe_allow_html=True)
 ss = st.session_state
-for k, v in {"series": None, "configs": {}, "results": None, "adopted": {}, "source_note": "",
-             "export_choice": {}, "table_v": 0, "curves": {}, "moments": {}, "km_v": 0}.items():
+for k, v in {"series": None, "configs": {}, "infos": {}, "results": None, "adopted": {}, "source_note": "",
+             "export_choice": {}, "table_v": 0, "curves": {}, "view": "tuner", "moments": {}, "km_v": 0}.items():
     ss.setdefault(k, v)
 
 
@@ -76,9 +77,8 @@ def _read_upload(upload, reader):
 
 
 def _pi_settings():
-    from pi_compression_tuner.settings import PISettings
-    return PISettings(server=ss.pi_server.strip(), url=ss.pi_url.strip(), source=ss.pi_source, auth=ss.pi_auth,
-                      verify=ss.pi_verify, ca_bundle=ss.pi_ca_bundle.strip(), afsdk_dir=ss.pi_afsdk_dir.strip())
+    """The connection settings of the server picked in the sidebar, from the Admin page's list."""
+    return admin.app_settings().server(ss.get("pi_server_label"))
 
 
 def _pi_connection():
@@ -98,26 +98,46 @@ def _pi_connection():
 def _search_filter(text: str) -> str:
     """A plain word searches anywhere in the name; text with * or ? is used as PI's own name filter."""
     text = text.strip()
+    if not text:
+        return "*"
     return text if any(c in text for c in "*?") else f"*{text}*"
+
+
+SEARCH_FIELDS = ("pi_search", "pi_find_source", "pi_find_units", "pi_find_desc")
 
 
 def _search_pi():
     conn = _pi_connection()
-    refs = conn.source.find_points(ss.pi_server.strip(), _search_filter(ss.pi_search), max_count=int(ss.pi_limit))
+    limit = admin.app_settings().max_results
+    from pi_compression_tuner.sources.base import PointFilter
+    where = PointFilter(pointsource=ss.get("pi_find_source", ""), engunits=ss.get("pi_find_units", ""),
+                        descriptor=ss.get("pi_find_desc", ""))
+    refs = conn.source.find_points(_pi_settings().server, _search_filter(ss.get("pi_search", "")), max_count=limit,
+                                   where=where)
     ss.pi_found = {r.name: r for r in refs}
+    ss.pi_found_capped = len(refs) >= limit
+    ss.pi_scan_capped = bool(getattr(conn.source, "last_search", {}).get("capped"))
     ss.pi_picked = [t for t in ss.get("pi_picked", []) if t in ss.pi_found]
     ss.pi_table_v = ss.get("pi_table_v", 0) + 1
 
 
 def _load_pi(refs, start, end):
     from pi_compression_tuner.sources.ops import fetch_recorded
+    from pi_compression_tuner.sources.piwebapi import config_from_attributes
     conn = _pi_connection()
-    configs = {r.name: conn.source.config(r) for r in refs}
+    configs, infos = {}, {}
+    for r in refs:
+        if hasattr(conn.source, "attributes"):
+            attrs = conn.source.attributes(r)
+            configs[r.name] = config_from_attributes(attrs)
+        else:
+            attrs, configs[r.name] = {}, conn.source.config(r)
+        infos[r.name] = point_info(r.name, attrs, r)
     bar = st.progress(0.0, text="Reading archived values")
     series = fetch_recorded(conn.source, refs, start, end, progress=lambda i, n: bar.progress(i / n, text=f"Read {i} of {n} points"))
     bar.empty()
     via = "PI Web API" if conn.kind == "webapi" else "AF SDK"
-    return series, configs, f"{ss.pi_server.strip()} · {len(refs)} points · {via}"
+    return series, configs, infos, f"{_pi_settings().label} · {len(refs)} points · {via}"
 
 
 def _set_picked(names):
@@ -129,14 +149,19 @@ def _point_picker(found):
     """The PI search results as a table to tick points in. Names are long, so this lives in the main area."""
     picked = set(ss.get("pi_picked", []))
     st.markdown(f"#### Points found in PI · {len(picked)} of {len(found)} ticked")
+    if ss.get("pi_found_capped"):
+        st.warning(f"The search stopped at {len(found):,} points, the most a search returns. Narrow the search, "
+                   "or raise the limit on the Admin page.")
+    templates = admin.app_settings().templates
     b1, b2, _ = st.columns([1, 1, 5])
     b1.button("Tick all", key="pi_pick_all", use_container_width=True, on_click=_set_picked, args=(list(found),))
     b2.button("Clear", key="pi_pick_none", use_container_width=True, on_click=_set_picked, args=([],))
     table = pd.DataFrame({"Read": [t in picked for t in found], "Tag": list(found),
                           "Description": [r.descriptor for r in found.values()],
-                          "Units": [r.engunits for r in found.values()]})
+                          "Units": [r.engunits for r in found.values()],
+                          "Template": [getattr(match(templates, point_info(t, ref=r)), "name", "") for t, r in found.items()]})
     edited = st.data_editor(table, key=f"pi_table_{ss.get('pi_table_v', 0)}", hide_index=True, use_container_width=True,
-                            disabled=["Tag", "Description", "Units"], height=min(40 + 35 * len(table), 460),
+                            disabled=["Tag", "Description", "Units", "Template"], height=min(40 + 35 * len(table), 460),
                             column_config={"Read": st.column_config.CheckboxColumn(width="small")})
     now = edited.loc[edited["Read"], "Tag"].tolist()
     if set(now) != picked:
@@ -144,22 +169,22 @@ def _point_picker(found):
         st.rerun()  # so the sidebar's Read button shows the new count
 
 
-def _pi_defaults():
-    """Fill the PI fields from the saved settings (`pict pi config`) the first time the page opens."""
-    if "pi_server" in ss:
-        return
-    from pi_compression_tuner.settings import PISettings, load_settings
-    try:
-        saved = load_settings()
-    except ValueError:
-        saved = PISettings()
-    for k, v in vars(saved).items():
-        ss.setdefault(f"pi_{k}", v)
+def _go(view):
+    ss.view = view
 
 
 with st.sidebar:
     st.markdown('<div class="pct-brand"><b>PI Compression Tuner</b><span>Read-only · recommendations</span></div>',
                 unsafe_allow_html=True)
+    if ss.view == "admin":
+        st.button("← Back to the tuner", key="admin_back", use_container_width=True, on_click=_go, args=("tuner",))
+        st.caption("Admin settings: PI servers, the search limit and point templates.")
+
+if ss.view == "admin":
+    admin.render()
+    st.stop()
+
+with st.sidebar:
     st.markdown("### Data")
     origin = st.radio("Source", ["Demo data", "CSV files", "PI server"], key="origin", label_visibility="collapsed",
                       help="CSV files can come from `pict pi record` (snapshot stream) or any export.")
@@ -167,13 +192,15 @@ with st.sidebar:
         days = st.slider("Days of data", 1, 7, 3, key="demo_days")
         if st.button("Load demo data", type="primary", key="load_demo", use_container_width=True):
             ss.series, ss.configs = demo_data(days)
+            ss.infos = demo_info()
             ss.source_note = f"Demo · 4 points · {days} days"
             _new_data()
     elif origin == "CSV files":
         data_up = st.file_uploader("Data", type="csv", key="data_up",
                                    help="Long (Tag, Timestamp, Value) or wide (Timestamp, one column per tag).")
         cfg_up = st.file_uploader("Point settings (optional)", type="csv", key="cfg_up",
-                                  help="PI Builder column names: Name, ExcDev, CompDev, CompMax, Span, ...")
+                                  help="PI Builder column names: Name, ExcDev, CompDev, CompMax, Span, ... "
+                                       "Descriptor, EngUnits and PointType columns let templates match.")
         km_up = st.file_uploader("Key moments (optional)", type="csv", key="km_up",
                                  help="Tag and Timestamp columns: events each proposal must keep. "
                                       "The Export tab saves them in this format.")
@@ -181,6 +208,7 @@ with st.sidebar:
             try:
                 ss.series = _read_upload(data_up, read_series)
                 ss.configs = _read_upload(cfg_up, read_configs) if cfg_up else {}
+                ss.infos = _read_upload(cfg_up, read_point_info) if cfg_up else {}
                 ss.source_note = f"{data_up.name} · {len(ss.series)} points"
                 _new_data()
                 if km_up:
@@ -188,34 +216,37 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Could not read the files: {e}")
     else:
-        _pi_defaults()
-        server = st.text_input("Data Archive", key="pi_server")
-        source = st.selectbox("Connect through", ["auto", "webapi", "afsdk"], key="pi_source",
-                              format_func={"auto": "PI Web API, then AF SDK", "webapi": "PI Web API only",
-                                           "afsdk": "AF SDK only"}.get)
-        st.text_input("PI Web API URL", placeholder="https://pihost/piwebapi", key="pi_url", disabled=source == "afsdk")
-        with st.expander("Connection options"):
-            st.selectbox("Web API sign-in", ["kerberos", "basic", "anonymous"], key="pi_auth",
-                         help="basic reads PI_WEBAPI_USER and PI_WEBAPI_PASSWORD from the environment.")
-            st.checkbox("Check TLS certificate", key="pi_verify")
-            st.text_input("CA certificate file (PEM)", key="pi_ca_bundle", help="For an internal certificate authority.")
-            st.text_input("AF SDK folder", key="pi_afsdk_dir")
-            st.number_input("Most search results", 1, 5000, 200, key="pi_limit")
-            if st.button("Save as my default connection", key="pi_save", use_container_width=True):
-                from pi_compression_tuner.settings import save_settings
-                try:
-                    st.success(f"Saved to {save_settings(_pi_settings())}")
-                except OSError as e:
-                    st.error(f"Could not save the settings: {e}")
+        app_cfg = admin.app_settings()
+        labels = app_cfg.labels()
+        if not labels:
+            st.info("No PI server is set up yet. Add one on the Admin page.")
+            server = ""
+        else:
+            if ss.get("pi_server_label") not in labels:
+                ss.pi_server_label = app_cfg.server().label
+            st.selectbox("PI server", labels, key="pi_server_label")
+            chosen = _pi_settings()
+            server = chosen.server
+            route = {"auto": "PI Web API, then AF SDK", "webapi": "PI Web API", "afsdk": "AF SDK"}.get(chosen.source, chosen.source)
+            st.caption(f"{chosen.server} · {route}")
 
         st.markdown("**Points**")
         with st.form("pi_search_form", border=False):
-            st.text_input("Search tag names", placeholder="FIC or FIC1*", key="pi_search",
-                          help="A word matches anywhere in the name. Use * and ? for PI's own name filter.")
-            search_clicked = st.form_submit_button("Search PI", key="pi_search_go", use_container_width=True)
+            st.text_input("Tag mask", placeholder="FIC or FIC1*", key="pi_search",
+                          help="A word matches anywhere in the name. Use * and ? for PI's own name filter. "
+                               "Leave empty for any name.")
+            st.text_input("Point source", placeholder="OPC or R*", key="pi_find_source",
+                          help="The interface's point source. * and ? are wildcards.")
+            c1, c2 = st.columns(2)
+            c1.text_input("Units", placeholder="degF", key="pi_find_units",
+                          help="Engineering units, exactly (any case), or with * and ? wildcards.")
+            c2.text_input("Description", placeholder="flow", key="pi_find_desc",
+                          help="Text anywhere in the description, or a pattern with * and ?.")
+            search_clicked = st.form_submit_button("Search PI", key="pi_search_go", use_container_width=True,
+                                                   disabled=not server)
         if search_clicked:
-            if not (server.strip() and ss.pi_search.strip()):
-                st.warning("Enter the Data Archive and a search first.")
+            if not any(ss.get(k, "").strip() for k in SEARCH_FIELDS):
+                st.warning("Fill in at least one search field.")
             else:
                 try:
                     _search_pi()
@@ -223,7 +254,10 @@ with st.sidebar:
                     st.error(f"Could not search PI: {e}")
         found = ss.get("pi_found", {})
         if found:
-            st.caption(f"{len(found)} found. Tick the points to read in the table on the right.")
+            more = " (the search limit; see Admin)" if ss.get("pi_found_capped") else ""
+            if ss.get("pi_scan_capped"):
+                more += ". The search stopped after reading 100,000 names; add a tag mask to cover the rest"
+            st.caption(f"{len(found)} found{more}. Tick the points to read in the table on the right.")
         with st.expander("Or paste tag names"):
             st.text_area("One per line", key="pi_tags", height=90, label_visibility="collapsed")
         c1, c2 = st.columns(2)
@@ -235,11 +269,11 @@ with st.sidebar:
         st.caption("Reads archived values: right for points whose compression is off or very tight. "
                    "For the rest, record with `pict pi record` and load the CSV files.")
         if st.button(f"Read {n} point{'s' if n != 1 else ''} from PI" if n else "Read from PI", type="primary",
-                     disabled=not (server.strip() and n), key="load_pi", use_container_width=True):
+                     disabled=not (server and n), key="load_pi", use_container_width=True):
             try:
                 conn = _pi_connection()
-                refs = [found[t] for t in picked] + [conn.source.point(server.strip(), t) for t in pasted if t not in picked]
-                ss.series, ss.configs, ss.source_note = _load_pi(refs, start, end)
+                refs = [found[t] for t in picked] + [conn.source.point(server, t) for t in pasted if t not in picked]
+                ss.series, ss.configs, ss.infos, ss.source_note = _load_pi(refs, start, end)
                 _new_data()
                 empty = [t for t, sr in ss.series.items() if len(sr) == 0]
                 if empty:
@@ -264,7 +298,13 @@ with st.sidebar:
                                    help="Raw mode: try several ExcDev ratios and keep the one with the fewest events.")
         excdev_ratio = st.number_input("ExcDev as a fraction of CompDev", 0.0, 1.0, 0.5, 0.05, key="excdev_ratio",
                                        disabled=mode != "raw" or search_ratio)
+    use_templates = st.checkbox("Use point templates", True, key="use_templates",
+                                help="Match each point to a template from the Admin page, for its baseline settings "
+                                     "and any target or error limit the template sets.")
     run = st.button("Run tuning", type="primary", disabled=ss.series is None, key="run", use_container_width=True)
+    st.divider()
+    st.button("Admin settings", key="admin_open", use_container_width=True, on_click=_go, args=("admin",),
+              help="PI servers, the search limit and point templates.")
 
 opts = TuneOptions(target=target_pct / 100, input_mode=mode, window_s=WINDOWS[window], max_error=max_err or None,
                    max_error_pct_span=max_err_pct or None, excdev_ratio=None if search_ratio else excdev_ratio)
@@ -274,7 +314,9 @@ if run and ss.series is not None:
     bar = st.progress(0.0, text="Tuning")
     items = list(ss.series.items())
     for i, (tag, s) in enumerate(items):
-        results.append(tune_point(tag, s, ss.configs.get(tag, PointConfig()), opts, moments=ss.moments.get(tag, ())))
+        results.append(tune_with_template(tag, s, ss.configs.get(tag, PointConfig()), opts, ss.infos.get(tag),
+                                          admin.app_settings().templates if use_templates else [],
+                                          moments=ss.moments.get(tag, ())))
         bar.progress((i + 1) / len(items), text=f"Tuned {i + 1} of {len(items)} points")
     bar.empty()
     _reset_results()
@@ -394,7 +436,7 @@ with tab_overview:
     for c in ("CurrentEventsPerDay", "RecommendedEventsPerDay"):
         df[c] = df[c].round()
     view = df[df["Classification"].isin(shown)]
-    cols = ["Export", "Tag", "Classification", "CurrentCompDev", "RecommendedCompDev", "RecommendedExcDev",
+    cols = ["Export", "Tag", "Classification", "Template", "CurrentCompDev", "RecommendedCompDev", "RecommendedExcDev",
             "CurrentRetention", "RecommendedRetention", "CurrentEventsPerDay", "RecommendedEventsPerDay",
             "EventChangePercent"]
     if run_opts.input_mode != "raw":
@@ -407,6 +449,7 @@ with tab_overview:
                                                       help="Selected (x) in the PI Builder sheet."),
             "Tag": st.column_config.TextColumn("Tag", width="medium"),
             "Classification": st.column_config.TextColumn("Verdict", width="small"),
+            "Template": st.column_config.TextColumn("Template", width="small"),
             "CurrentCompDev": st.column_config.NumberColumn("CompDev", format="%.4g", width="small"),
             "RecommendedCompDev": st.column_config.NumberColumn("→ proposed", format="%.4g", width="small"),
             "RecommendedExcDev": st.column_config.NumberColumn("ExcDev", format="%.4g", width="small"),
@@ -698,7 +741,9 @@ with tab_point:
                          disabled=not stale, use_container_width=True,
                          help="Find the loosest setting that keeps every key moment."):
                 i = [x.tag for x in ss.results].index(tag)
-                ss.results[i] = tune_point(tag, s, cfg_now, run_opts, moments=pending)
+                ss.results[i] = tune_with_template(tag, s, cfg_now, run_opts, ss.infos.get(tag),
+                                                   admin.app_settings().templates if ss.get("use_templates", True) else [],
+                                                   moments=pending)
                 ss.curves.pop(tag, None)
                 ss.adopted.pop(tag, None)
                 ss.export_choice.pop(tag, None)
@@ -723,7 +768,8 @@ with tab_export:
         r.tag for r in results if r.tag not in ss.export_choice and r.changes and (r.ready_to_export or r.tag in ss.adopted)}
     left, right = st.columns([5, 12], gap="large")
     with left:
-        server_name = st.text_input("Data Archive (PI Builder Parent column)", ss.get("pi_server", ""), key="parent")
+        server_name = st.text_input("Data Archive (PI Builder Parent column)",
+                                    _pi_settings().server if ss.origin == "PI server" else "", key="parent")
         pib = pibuilder_frame(results, server=server_name, include_excdev=run_opts.input_mode == "raw", selected=selected)
         n_sel = int((pib["Selected(x)"] == "x").sum())
         st.markdown(style.kpis([("Changed points", f"{len(pib)}", "rows in the sheet"),

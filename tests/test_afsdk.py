@@ -132,3 +132,29 @@ def test_boxed_dotnet_numbers_are_read_and_digital_states_dropped():
     assert _num(val(State(), as_double=248.0)) is None
     assert _num(val(1.0, good=False)) is None
     assert _num(val(True)) is None
+
+
+def test_find_points_passes_point_source_and_filters_the_rest():
+    from pi_compression_tuner.sources.base import PointFilter
+
+    class Pt:
+        def __init__(self, name, desc, units):
+            self.Name, self.a = name, {"descriptor": desc, "engunits": units, "pointtype": "Float32"}
+
+        def GetAttribute(self, a):
+            return self.a.get(a)
+
+    pts = [Pt("A", "Feed flow", "gpm"), Pt("B", "Tank level", "%"), Pt("C", "Steam flow", "klb/h")]
+    seen = {}
+
+    def find(srv, name, source, load):
+        seen.update(name=name, source=source)
+        return iter(pts)
+
+    sdk = _sdk(None)
+    sdk["PI"].PIPoint.FindPIPoints = find
+    src = AFSDK(sdk=sdk)
+    got = src.find_points("SRV", "", 10, where=PointFilter(pointsource="OPC*", descriptor="flow"))
+    assert [r.name for r in got] == ["A", "C"] and seen == {"name": "*", "source": "OPC*"}
+    assert got[0].engunits == "gpm" and src.last_search["scanned"] == 3
+    assert [r.name for r in src.find_points("SRV", "*", 10)] == ["A", "B", "C"] and seen["source"] is None

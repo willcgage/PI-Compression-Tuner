@@ -99,6 +99,8 @@ class TuneResult:
     input_events: int
     ready_to_export: bool = False
     notes: list = field(default_factory=list)
+    template: str = ""                        # the point template that matched, if any
+    baseline: PointConfig | None = None       # that template's settings for this point
     moments: tuple = ()  # key moment timestamps the result was tuned to keep
     spikes: int = 0      # isolated one-event spikes in the input
     moment_compdev: float | None = None  # CompDev the key moments alone imply (a sanity check)
@@ -386,4 +388,5 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
                      "or an instrument fault; mark it as a key moment to keep it.")
 
     safe = cls in (Classification.STORING_NOISE, Classification.LOSING_DETAIL)
-    return TuneResult(tag, cls, current_eval, recommended, noise, n, safe, notes, moments, len(spikes), moment_compdev)
+    return TuneResult(tag, cls, current_eval, recommended, noise, n, safe, notes,
+                      moments=moments, spikes=len(spikes), moment_compdev=moment_compdev)

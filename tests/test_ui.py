@@ -36,13 +36,18 @@ def test_probe_value_can_be_adopted():
     assert any("CompDev adopted from the probe" in m.value for m in at.markdown)
 
 
+def _save_servers(*servers, max_results=1000):
+    from pi_compression_tuner.settings import AppSettings, save_app_settings
+    save_app_settings(AppSettings(servers=list(servers), default_server=servers[0].label if servers else "",
+                                  max_results=max_results))
+
+
 def test_pi_errors_are_shown_not_raised():
+    from pi_compression_tuner.settings import PISettings
+    _save_servers(PISettings(server="NOSUCHSERVER", source="webapi", url="https://127.0.0.1:9/piwebapi"))
     at = AppTest.from_file(APP, default_timeout=60)
     at.run()
     at.radio(key="origin").set_value("PI server").run()
-    at.text_input(key="pi_server").input("NOSUCHSERVER").run()
-    at.selectbox(key="pi_source").set_value("webapi").run()
-    at.text_input(key="pi_url").input("https://127.0.0.1:9/piwebapi").run()
     at.text_input(key="pi_search").input("FIC")
     at.button(key="pi_search_go").click().run()
     assert not at.exception
@@ -56,13 +61,18 @@ class FakePI:
         from pi_compression_tuner.demo import demo_data
         self.series, self.configs = demo_data(1)
         self.filters = []
+        self.wheres = []
 
-    def find_points(self, server, name_filter="*", max_count=1000):
+    def find_points(self, server, name_filter="*", max_count=1000, where=None):
         from fnmatch import fnmatch
 
-        from pi_compression_tuner.sources.base import PointRef
+        from pi_compression_tuner.demo import DEMO_INFO
+        from pi_compression_tuner.sources.base import PointFilter, PointRef
         self.filters.append(name_filter)
-        return [PointRef(t, descriptor=f"{t} description") for t in self.series if fnmatch(t, name_filter)][:max_count]
+        self.wheres.append(where)
+        refs = [PointRef(t, descriptor=DEMO_INFO[t]["descriptor"], engunits=DEMO_INFO[t]["engunits"])
+                for t in self.series if fnmatch(t, name_filter)]
+        return [r for r in refs if (where or PointFilter()).keeps(r)][:max_count]
 
     def point(self, server, tag):
         from pi_compression_tuner.sources.base import PointRef
@@ -79,11 +89,11 @@ def test_search_pick_and_read_from_pi(monkeypatch):
     from pi_compression_tuner.sources import connect as connect_mod
     fake = FakePI()
     monkeypatch.setattr(connect_mod, "connect", lambda *a, **k: connect_mod.Connection(fake, "webapi"))
+    from pi_compression_tuner.settings import PISettings
+    _save_servers(PISettings(server="PISRV", url="https://pi/piwebapi"))
     at = AppTest.from_file(APP, default_timeout=120)
     at.run()
     at.radio(key="origin").set_value("PI server").run()
-    at.text_input(key="pi_server").input("PISRV").run()
-    at.text_input(key="pi_url").input("https://pi/piwebapi").run()
     at.text_input(key="pi_search").input("DEMO")
     at.button(key="pi_search_go").click().run()
     assert fake.filters == ["*DEMO*"]
@@ -103,18 +113,54 @@ def test_search_pick_and_read_from_pi(monkeypatch):
     assert any("Proposed changes" in m.value for m in at.markdown)
 
 
-def test_pi_fields_start_from_saved_settings(tmp_path, monkeypatch):
-    from pi_compression_tuner.settings import PISettings, save_settings
-    save_settings(PISettings(server="PISRV", url="https://pi/piwebapi", auth="anonymous"))
-    at = AppTest.from_file(APP, default_timeout=60)
+def test_server_dropdown_lists_admin_servers_and_main_page_has_no_connection_fields(monkeypatch):
+    from pi_compression_tuner.settings import PISettings
+    from pi_compression_tuner.sources import connect as connect_mod
+    fake = FakePI()
+    calls = []
+    monkeypatch.setattr(connect_mod, "connect", lambda server, **k: calls.append(server) or connect_mod.Connection(fake, "webapi"))
+    _save_servers(PISettings(server="PISRV", url="https://pi/piwebapi", name="Plant"),
+                  PISettings(server="LABSRV", source="afsdk"), max_results=2)
+    at = AppTest.from_file(APP, default_timeout=120)
     at.run()
     at.radio(key="origin").set_value("PI server").run()
-    assert at.text_input(key="pi_server").value == "PISRV"
-    assert at.selectbox(key="pi_auth").value == "anonymous"
-    at.text_input(key="pi_server").input("OTHER").run()
-    at.button(key="pi_save").click().run()
-    from pi_compression_tuner.settings import load_settings
-    assert load_settings().server == "OTHER"
+    box = at.selectbox(key="pi_server_label")
+    assert box.options == ["Plant", "LABSRV"] and box.value == "Plant"
+    keys = {w.key for w in at.sidebar.text_input}
+    assert not keys & {"pi_server", "pi_url", "pi_ca_bundle", "pi_afsdk_dir"}
+    box.set_value("LABSRV").run()
+    at.text_input(key="pi_search").input("DEMO")
+    at.button(key="pi_search_go").click().run()
+    assert calls == ["LABSRV"]
+    assert any("search limit" in c.value for c in at.caption)  # 2 of 4 demo points: the limit was hit
+    assert at.warning and "stopped at 2 points" in at.warning[0].value
+
+
+def test_admin_page_renders_and_saves_search_limit():
+    from pi_compression_tuner.settings import load_app_settings
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.run()
+    at.button(key="admin_open").click().run()
+    assert not at.exception, at.exception
+    assert any("Point templates" in m.value for m in at.markdown)
+    at.number_input(key="admin_max_results").set_value(5000).run()
+    at.button(key="admin_save_search").click().run()
+    assert not at.exception and not at.error, (at.exception, at.error)
+    saved = load_app_settings()
+    assert saved.max_results == 5000 and len(saved.templates) > 10
+    at.text_input(key="try_desc").input("Reactor outlet temperature")
+    at.text_input(key="try_units").input("deg F").run()
+    assert at.success and "Temperature, °F" in at.success[0].value
+    at.button(key="admin_back").click().run()
+    assert at.radio(key="origin")
+
+
+def test_demo_points_match_templates():
+    at = _loaded_and_run()
+    results = {r.tag: r for r in at.session_state["results"]}
+    assert results["DEMO.TEMP.PV"].template == "Temperature, °F"
+    assert results["DEMO.LEVEL.PV"].template == "Level"
+    assert any("Matched the" in n for n in results["DEMO.FLOW.PV"].notes)
 
 
 def test_point_detail_navigation_and_zoom():
@@ -139,10 +185,11 @@ def test_points_with_too_few_events_render(monkeypatch):
 
     fake = FewPI()
     monkeypatch.setattr(connect_mod, "connect", lambda *a, **k: connect_mod.Connection(fake, "afsdk"))
+    from pi_compression_tuner.settings import PISettings
+    _save_servers(PISettings(server="PISRV", source="afsdk"))
     at = AppTest.from_file(APP, default_timeout=120)
     at.run()
     at.radio(key="origin").set_value("PI server").run()
-    at.text_input(key="pi_server").input("PISRV").run()
     at.text_input(key="pi_search").input("DEMO")
     at.button(key="pi_search_go").click().run()
     at.button(key="pi_pick_all").click().run()
@@ -153,6 +200,28 @@ def test_points_with_too_few_events_render(monkeypatch):
     for tag in ("DEMO.TEMP.PV", "DEMO.FLOW.PV"):
         at.selectbox(key="detail_tag").set_value(tag).run()
         assert not at.exception, at.exception
+
+
+def test_search_by_units_and_description(monkeypatch):
+    from pi_compression_tuner.settings import PISettings
+    from pi_compression_tuner.sources import connect as connect_mod
+    fake = FakePI()
+    monkeypatch.setattr(connect_mod, "connect", lambda *a, **k: connect_mod.Connection(fake, "webapi"))
+    _save_servers(PISettings(server="PISRV", url="https://pi/piwebapi"))
+    at = AppTest.from_file(APP, default_timeout=120)
+    at.run()
+    at.radio(key="origin").set_value("PI server").run()
+    at.text_input(key="pi_find_units").input("PSIG")
+    at.text_input(key="pi_find_source").input("OPC")
+    at.button(key="pi_search_go").click().run()
+    assert fake.filters == ["*"]  # no tag mask: every name, filtered on the rest
+    assert fake.wheres[-1].pointsource == "OPC"
+    assert list(at.session_state["pi_found"]) == ["DEMO.PRESS.PV"]
+    at.text_input(key="pi_find_units").input("")
+    at.text_input(key="pi_find_source").input("")
+    at.text_input(key="pi_find_desc").input("level")
+    at.button(key="pi_search_go").click().run()
+    assert list(at.session_state["pi_found"]) == ["DEMO.LEVEL.PV"]
 
 
 def test_key_moments_suggest_and_retune():

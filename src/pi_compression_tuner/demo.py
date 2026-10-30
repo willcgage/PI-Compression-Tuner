@@ -29,3 +29,17 @@ def demo_data(days: float = 3, seed: int = 1, step_s: float = 5.0) -> tuple[dict
     for i in np.random.default_rng(seed + 1).choice(np.arange(1, n - 1), size=3, replace=False):
         temp[i] += 4.0
     return ({k: Series(START + t, v) for k, (v, _) in sigs.items()}, {k: c for k, (_, c) in sigs.items()})
+
+
+DEMO_INFO = {
+    "DEMO.TEMP.PV": {"descriptor": "Reactor outlet temperature", "engunits": "degF", "pointtype": "Float32"},
+    "DEMO.FLOW.PV": {"descriptor": "Feed flow", "engunits": "gpm", "pointtype": "Float32"},
+    "DEMO.PRESS.PV": {"descriptor": "Header pressure", "engunits": "psig", "pointtype": "Float32"},
+    "DEMO.LEVEL.PV": {"descriptor": "Surge tank level", "engunits": "%", "pointtype": "Float32"},
+}
+
+
+def demo_info() -> dict[str, dict]:
+    """Descriptions and units for the demo points, so templates match them."""
+    from .templates import point_info
+    return {tag: point_info(tag, attrs) for tag, attrs in DEMO_INFO.items()}

@@ -111,3 +111,23 @@ def read_configs(path: str | Path) -> dict[str, PointConfig]:
             alarm_limits=limits(row),
         )
     return out
+
+
+_INFO_COLS = {"descriptor": ("descriptor", "description"), "engunits": ("engunits", "units", "engineeringunits"),
+              "pointtype": ("pointtype",), "ptclassname": ("ptclassname", "pointclass"), "pointsource": ("pointsource",)}
+
+
+def read_point_info(path: str | Path) -> dict[str, dict]:
+    """What templates match on (Descriptor, EngUnits, PointType, PtClassName, PointSource), from a settings CSV.
+
+    Points get an entry only when the file has at least one of these columns.
+    """
+    from ..templates import point_info
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    cols = {c.strip().lower(): c for c in df.columns}
+    tagcol = _find(cols, _TAG_COLS)
+    found = {k: _find(cols, names) for k, names in _INFO_COLS.items()}
+    if tagcol is None or not any(found.values()):
+        return {}
+    return {str(row[tagcol]): point_info(str(row[tagcol]), {k: row[c] for k, c in found.items() if c})
+            for _, row in df.iterrows()}

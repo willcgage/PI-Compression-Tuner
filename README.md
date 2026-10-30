@@ -76,8 +76,8 @@ pict ui          # opens http://localhost:8501
 1. **Load data** in the sidebar. Choose one of:
    - **Demo data**: synthetic signals, no PI needed.
    - **CSV files**: for example a `pict pi record` capture.
-   - **PI server**: reads archived values through the PI Web API, falling back to AF SDK. The connection fields start from the saved settings (`pict pi config`), and **Save as my default connection** under Connection options updates them. Search tag names (a word matches anywhere in the name; `*` and `?` use PI's own filter), tick points in the results table, or paste a list of names.
-2. **Choose tuning settings and run.** Settings are the target retention, scoring window, error limits, and whether the data is the snapshot stream or raw interface values.
+   - **PI server**: pick a server from the list (set up on the **Admin settings** page) and read archived values through the PI Web API, falling back to AF SDK. Search by any mix of tag mask (a word matches anywhere in the name; `*` and `?` use PI's own filter), point source, engineering units and description (text anywhere in it, or a `*`/`?` pattern). Then tick points in the results table, or paste a list of names. PI filters the tag mask (and, through AF SDK, the point source) itself; the tuner checks the rest, reading up to 100,000 names per search, so a tag mask makes large searches faster. The results table shows which point template each point matches. A search returns up to 1,000 points by default; the limit is an admin setting (up to 100,000), and the page says when a search hit it.
+2. **Choose tuning settings and run.** Settings are the target retention, scoring window, error limits, and whether the data is the snapshot stream or raw interface values. With **Use point templates** on, each point's template supplies its baseline settings and any target or error limit it sets.
 3. **Overview tab:**
    - A map plots every point by archive events per day against retention, with arrows showing where each proposal moves it.
    - Below the map is the verdict table. Tick **Export** for the rows you want selected in the PI Builder sheet. Rows ready to export are ticked by default.
@@ -115,6 +115,18 @@ A key moment is an event the archive must never lose, such as a trip, a peak or 
 
 An isolated spike is one event that jumps at least 6 noise widths away and comes straight back. The signal profile counts them, and the notes flag them, because only a person can tell a real event from an instrument fault. Swinging door usually archives spikes, so each one costs archive events. Spikes are never dropped or smoothed. To be sure a real one is always kept, mark it as a key moment.
 
+**Admin settings** (button at the bottom of the sidebar) holds what used to sit in the sidebar's connection fields, saved to `pict.toml`:
+
+- **PI servers:** one row per Data Archive: a name for the list, the Web API URL, how to connect (PI Web API then AF SDK, or either alone), sign-in, TLS check, CA file and AF SDK folder. Add, edit and remove rows, pick the default, and test the connection.
+- **Point search:** the most points a search returns.
+- **Point templates:** see below.
+
+### Point templates
+
+A template is a starting point for one kind of point. It matches on the point's description, engineering units, point type, point class, point source or tag name, and carries baseline settings (CompDev in units or percent of span, ExcDev, CompMax, ExcMax, CompMin, ExcMin, Step, Compression) and optional tuning overrides (target retention, largest error). The tuner still proposes CompDev from the data. The template adds what the data can't say (the time limits, Step, whether to compress at all), a baseline to compare the proposal against, and per-kind targets. Its settings go in the results table (`Template*` columns) and the point's notes.
+
+Templates are added, edited, turned on or off and removed in the Admin page's table, and tried against a sample point before saving. The starter list (temperature, pressure, flow, level, valve output, pH, electrical, speed, vibration, analyzers, totalizers, setpoints, lab and manual entries, digital states) comes from published PI guidance; see [docs/templates.md](docs/templates.md) for the values and sources.
+
 Recording the snapshot stream takes hours to days, so it stays a command-line job (`pict pi record`). Load its output into the UI as CSV files.
 
 ## Try the command line without PI
@@ -144,7 +156,7 @@ pict pi record --server PISRV --url https://pihost/piwebapi --filter "FIC*" --du
 pict analyze capture/data.csv --config capture/config.csv --mode snapshot --server PISRV --out results
 ```
 
-- **Saved settings:** `pict pi config` saves the server, Web API URL, sign-in, TLS options and AF SDK folder to `pict.toml`, and shows them when run with no options. Every `pict pi` command and the UI start from them; options given on the command line win. The file is `PICT_CONFIG` if set, else `pict.toml` in the current folder, else `%APPDATA%\pict\pict.toml` (`~/.config/pict/pict.toml` elsewhere).
+- **Saved settings:** `pict pi config` saves the default server's Data Archive, Web API URL, sign-in, TLS options and AF SDK folder to `pict.toml`, and shows them when run with no options. Other servers, the search limit and the templates are kept, and are edited on the UI's Admin page. Every `pict pi` command starts from the default server; options given on the command line win. `pict analyze` matches the saved templates on the settings CSV's `Descriptor`, `EngUnits` and `PointType` columns (`--no-templates` turns that off). A `pict.toml` from an earlier version, with a single `[pi]` table, is read as one server. The file is `PICT_CONFIG` if set, else `pict.toml` in the current folder, else `%APPDATA%\pict\pict.toml` (`~/.config/pict/pict.toml` elsewhere).
 - **PI Web API:**
   - `--auth` takes `kerberos` (the default), `basic` (which reads `PI_WEBAPI_USER` and `PI_WEBAPI_PASSWORD` from the environment), or `anonymous`.
   - Use `--ca-bundle` for an internal CA.

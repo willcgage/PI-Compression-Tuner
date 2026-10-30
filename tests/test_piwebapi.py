@@ -84,3 +84,23 @@ def test_lookups_by_path():
     api.check("SRV")
     ref = api.point("SRV", "A")
     assert (ref.name, ref.web_id, ref.path) == ("A", "W1", "\\\\SRV\\A")
+
+
+def test_find_points_filters_units_description_and_point_source():
+    from pi_compression_tuner.sources.base import PointFilter
+    items = [{"Name": f"T{i}", "WebId": f"W{i}", "Descriptor": d, "EngineeringUnits": u}
+             for i, (d, u) in enumerate([("Feed flow", "gpm"), ("Header pressure", "psig"),
+                                         ("Steam flow", "klb/h"), ("Return flow", "GPM")])]
+    sources = {"W0": "OPC", "W1": "OPC", "W2": "OPC", "W3": "R"}
+    routes = {"dataservers": {"WebId": "DS1"},
+              "dataservers/DS1/points": lambda p: {"Items": items[p["startIndex"]:p["startIndex"] + p["maxCount"]]}}
+    routes |= {f"points/{w}/attributes/pointsource": {"Value": v} for w, v in sources.items()}
+    api = _api(routes)
+    got = api.find_points("SRV", "*", 10, where=PointFilter(engunits="gpm", descriptor="FLOW"))
+    assert [r.name for r in got] == ["T0", "T3"]
+    got = api.find_points("SRV", "*", 10, where=PointFilter(engunits="gpm", pointsource="opc"))
+    assert [r.name for r in got] == ["T0"]
+    looked_up = [c[0] for c in api.s.calls if c[0].endswith("pointsource")]
+    assert looked_up == ["points/W0/attributes/pointsource", "points/W3/attributes/pointsource"]  # only unit matches
+    assert api.find_points("SRV", "*", 1, where=PointFilter(descriptor="*flow"))[0].name == "T0"
+    assert api.last_search == {"scanned": 4, "capped": False}

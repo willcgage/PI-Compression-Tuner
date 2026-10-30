@@ -9,7 +9,8 @@ import pandas as pd
 from ..models import Series
 from .base import PISource, PointRef
 
-CONFIG_COLUMNS = ("ExcDev", "ExcMin", "ExcMax", "CompDev", "CompMin", "CompMax", "Compressing", "Step", "Zero", "Span", "PointType")
+CONFIG_COLUMNS = ("ExcDev", "ExcMin", "ExcMax", "CompDev", "CompMin", "CompMax", "Compressing", "Step", "Zero", "Span", "PointType",
+                  "Descriptor", "EngUnits", "PtClassName", "PointSource")
 
 
 def resolve_points(src: PISource, server: str, tags: Iterable[str] = (), name_filter: str | None = None,
