@@ -24,6 +24,9 @@ def results_frame(results: list[TuneResult]) -> pd.DataFrame:
             "Change": r.changes,
             "InputEvents": r.input_events,
             "Noise": r.noise,
+            "Spikes": r.spikes,
+            "KeyMoments": len(r.moments),
+            "MomentCompDev": r.moment_compdev,
         }
         for prefix, ev in (("Current", cur), ("Recommended", rec)):
             row.update({
@@ -35,6 +38,7 @@ def results_frame(results: list[TuneResult]) -> pd.DataFrame:
                 f"{prefix}RMSError": ev.score.rms_error if ev else None,
                 f"{prefix}EventsPerDay": ev.events_per_day if ev else None,
                 f"{prefix}CompressionRatio": ev.compression_ratio if ev else None,
+                f"{prefix}MomentsMissed": ev.moments_missed if ev else None,
             })
         if cur and rec and cur.archived_events:
             row["EventChangePercent"] = 100.0 * (rec.archived_events - cur.archived_events) / cur.archived_events

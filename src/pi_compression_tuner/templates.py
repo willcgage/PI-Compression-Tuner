@@ -212,11 +212,12 @@ def tune_options_for(template: Template | None, opts):
     return replace(opts, **changes) if changes else opts
 
 
-def tune_with_template(tag, series, current: PointConfig, opts, info: dict | None, templates: list[Template]):
+def tune_with_template(tag, series, current: PointConfig, opts, info: dict | None, templates: list[Template],
+                       moments=()):
     """Tune one point, with the matching template's overrides, baseline and notes attached to the result."""
     from .tune import tune_point
     t = match(templates, info) if info else None
-    result = tune_point(tag, series, current, tune_options_for(t, opts))
+    result = tune_point(tag, series, current, tune_options_for(t, opts), moments=moments)
     if t is None:
         return result
     result.template = t.name
