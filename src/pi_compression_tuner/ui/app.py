@@ -12,6 +12,7 @@ Recommendations only: nothing here writes to PI.
 from __future__ import annotations
 
 import dataclasses
+import re
 import tempfile
 from collections import Counter
 from pathlib import Path
@@ -27,6 +28,7 @@ from pi_compression_tuner.demo import demo_data, demo_info
 from pi_compression_tuner.export import pibuilder_frame, results_frame
 from pi_compression_tuner.metrics import reconstruct
 from pi_compression_tuner.models import PointConfig, Series
+from pi_compression_tuner.moments import moment_index, moments_frame, read_moments, suggest_moments
 from pi_compression_tuner.report import envelope, write_report
 from pi_compression_tuner.simulate import simulate_archive
 from pi_compression_tuner.sources.csvfiles import read_configs, read_point_info, read_series
@@ -43,13 +45,20 @@ st.set_page_config(page_title="PI Compression Tuner", layout="wide", initial_sid
 st.markdown(style.CSS, unsafe_allow_html=True)
 ss = st.session_state
 for k, v in {"series": None, "configs": {}, "infos": {}, "results": None, "adopted": {}, "source_note": "",
-             "export_choice": {}, "table_v": 0, "curves": {}, "view": "tuner"}.items():
+             "export_choice": {}, "table_v": 0, "curves": {}, "view": "tuner", "moments": {}, "km_v": 0}.items():
     ss.setdefault(k, v)
 
 
 def _reset_results():
     ss.results, ss.adopted, ss.curves, ss.export_choice = None, {}, {}, {}
     ss.table_v += 1
+
+
+def _new_data():
+    """Forget results and key moments when a new data set is loaded."""
+    _reset_results()
+    ss.moments = {}
+    ss.km_v += 1
 
 
 def _fmt_n(x: float) -> str:
@@ -186,20 +195,25 @@ with st.sidebar:
             ss.series, ss.configs = demo_data(days)
             ss.infos = demo_info()
             ss.source_note = f"Demo · 4 points · {days} days"
-            _reset_results()
+            _new_data()
     elif origin == "CSV files":
         data_up = st.file_uploader("Data", type="csv", key="data_up",
                                    help="Long (Tag, Timestamp, Value) or wide (Timestamp, one column per tag).")
         cfg_up = st.file_uploader("Point settings (optional)", type="csv", key="cfg_up",
                                   help="PI Builder column names: Name, ExcDev, CompDev, CompMax, Span, ... "
                                        "Descriptor, EngUnits and PointType columns let templates match.")
+        km_up = st.file_uploader("Key moments (optional)", type="csv", key="km_up",
+                                 help="Tag and Timestamp columns: events each proposal must keep. "
+                                      "The Export tab saves them in this format.")
         if st.button("Load files", type="primary", disabled=data_up is None, key="load_csv", use_container_width=True):
             try:
                 ss.series = _read_upload(data_up, read_series)
                 ss.configs = _read_upload(cfg_up, read_configs) if cfg_up else {}
                 ss.infos = _read_upload(cfg_up, read_point_info) if cfg_up else {}
                 ss.source_note = f"{data_up.name} · {len(ss.series)} points"
-                _reset_results()
+                _new_data()
+                if km_up:
+                    ss.moments = {t: sorted(v.tolist()) for t, v in _read_upload(km_up, read_moments).items()}
             except Exception as e:
                 st.error(f"Could not read the files: {e}")
     else:
@@ -261,7 +275,7 @@ with st.sidebar:
                 conn = _pi_connection()
                 refs = [found[t] for t in picked] + [conn.source.point(server, t) for t in pasted if t not in picked]
                 ss.series, ss.configs, ss.infos, ss.source_note = _load_pi(refs, start, end)
-                _reset_results()
+                _new_data()
                 empty = [t for t, sr in ss.series.items() if len(sr) == 0]
                 if empty:
                     st.warning(f"{len(empty)} of {len(ss.series)} points came back with no numeric values between "
@@ -313,7 +327,8 @@ if run and ss.series is not None:
     items = list(ss.series.items())
     for i, (tag, s) in enumerate(items):
         results.append(tune_with_template(tag, s, ss.configs.get(tag, PointConfig()), opts, ss.infos.get(tag),
-                                          admin.app_settings().templates if use_templates else []))
+                                          admin.app_settings().templates if use_templates else [],
+                                          moments=ss.moments.get(tag, ())))
         bar.progress((i + 1) / len(items), text=f"Tuned {i + 1} of {len(items)} points")
     bar.empty()
     _reset_results()
@@ -660,23 +675,103 @@ with tab_point:
                 fig.add_trace(go.Scattergl(x=ts(at), y=av, name=name, mode=mode, marker=mk,
                                            line=dict(color=color, width=1.8 if name != "Archive now" else 1.3,
                                                      shape="hv" if cfg.step else "linear")), row=1, col=1)
+            pending = sorted(ss.moments.get(tag, []))
+            mi = moment_index(s, pending)
+            if w is not None:
+                mi = mi[w[mi]]
+            if len(mi):
+                fig.add_scatter(x=ts(s.t[mi]), y=s.v[mi], name="Key moment", mode="markers", row=1, col=1,
+                                marker=dict(size=12, symbol="diamond-open", color=INK["probe"], line=dict(width=2)))
+            for lim in cfg_now.alarm_limits:
+                fig.add_hline(y=lim, line=dict(color=INK["probe"], width=1, dash="dash"), row=1, col=1,
+                              annotation_text=f"Alarm {lim:g}", annotation_font_color=INK["probe"],
+                              annotation_position="top left")
             fig.add_trace(go.Scattergl(x=ts(xt), y=xv, name="Detail lost", fill="tozeroy", fillcolor="rgba(208,87,74,0.25)",
                                        line=dict(color=INK["loss"], width=1)), row=2, col=1)
-            style.plot_layout(fig, 460, hovermode="x unified")
+            # Plotly reports a click for selection only on markers and only with closest-point hover,
+            # so the trend lines get invisible markers to make them clickable for key moments.
+            for tr in fig.data:
+                if tr.name == "Input" or (tr.name.startswith("Archive") and tr.mode == "lines"):
+                    tr.update(mode="lines+markers", marker=dict(size=8, opacity=0))
+            style.plot_layout(fig, 460, hovermode="closest")
             fig.update_yaxes(title_text="Value", row=1, col=1)
             fig.update_yaxes(title_text="Lost", row=2, col=1, rangemode="tozero")
-            if w is not None:
+            if w is None:
+                fig.update_xaxes(range=[ts(s.t[0]), ts(s.t[-1])])  # no padding from the invisible markers
+            else:
                 wv = s.v[w]
                 pad = max(np.ptp(wv), r.noise, 1e-9) * 0.15
                 fig.update_xaxes(range=[ts(lo), ts(hi)])
                 fig.update_yaxes(range=[wv.min() - pad, wv.max() + pad], row=1, col=1)
-            st.plotly_chart(fig, use_container_width=True, config=PLOT_CONFIG)
+            picked = st.plotly_chart(fig, use_container_width=True, config=PLOT_CONFIG, key=f"trend_{tag}_{ss.km_v}",
+                                     on_select="rerun", selection_mode="points")
+            # A click on the trend marks a key moment at the nearest input event. The lines overlap,
+            # so any trace's point counts. Selections persist across reruns, so only a new one adds.
+            clicked = tuple(pd.Timestamp(p["x"], tz="UTC").timestamp() if pd.Timestamp(p["x"]).tzinfo is None
+                            else pd.Timestamp(p["x"]).timestamp()
+                            for p in (picked.selection.points if picked else []) if "x" in p)
+            if clicked and clicked != ss.get(f"clicked_{tag}"):
+                ss[f"clicked_{tag}"] = clicked
+                ss.moments[tag] = sorted(set(pending) | {float(s.t[i]) for i in moment_index(s, clicked)})
+                ss.km_v += 1
+                st.rerun()
             what = {"Archive now": "today's archive", "Archive proposed": "the proposed archive",
                     "Archive at probe": "the probe's archive"}[judged_name]
             st.markdown(f'<p class="pct-note">The lower strip shows where {what} strays from the input by more than the '
                         "noise band; flat means no real detail is lost. <b>Largest miss</b> zooms to one scoring window "
                         "around the biggest error, with each archived event marked. Zoom and pan freely: every event is "
                         "drawn; double-click the chart to see the whole period.</p>", unsafe_allow_html=True)
+
+            st.markdown(style.section("Key moments"), unsafe_allow_html=True)
+            k1, k4, k2, k3 = st.columns([7, 3, 2, 3], vertical_alignment="bottom")
+            fmt = lambda t: pd.to_datetime(t, unit="s", utc=True).strftime("%b %d %H:%M:%S")  # noqa: E731
+            kept = k1.multiselect("Key moments", pending, default=pending, format_func=fmt, key=f"km_{tag}_{ss.km_v}",
+                                  label_visibility="collapsed", placeholder="Click the trend, or press Suggest")
+            if sorted(kept) != pending:
+                ss.moments[tag] = sorted(kept)
+                ss.km_v += 1
+                st.rerun()
+            lim_text = k4.text_input("Alarm limits", ", ".join(f"{x:g}" for x in cfg_now.alarm_limits),
+                                     key=f"lim_{tag}_{ss.km_v}", placeholder="Alarm limits, e.g. 20, 80", label_visibility="collapsed",
+                                     help="Lo, Hi, LoLo and HiHi, separated by commas. Suggest marks each crossing.")
+            try:
+                limits = tuple(sorted({float(x) for x in re.split(r"[;,\s]+", lim_text.strip()) if x}))
+            except ValueError:
+                limits = cfg_now.alarm_limits
+                k4.caption("Use numbers separated by commas.")
+            if limits != cfg_now.alarm_limits:
+                ss.configs[tag] = dataclasses.replace(cfg_now, alarm_limits=limits)
+                st.rerun()
+            if k2.button("Suggest", key=f"km_suggest_{tag}", use_container_width=True,
+                         help="Mark the main peaks, valleys and steps, and each alarm-limit crossing."):
+                ss.moments[tag] = sorted(set(pending) | set(suggest_moments(s, r.noise, limits=limits).tolist()))
+                ss.km_v += 1
+                st.rerun()
+            stale = tuple(pending) != tuple(r.moments)
+            if k3.button(f"Retune with {len(pending)} moment{'s' if len(pending) != 1 else ''}" if pending
+                         else "Retune without moments", key=f"km_retune_{tag}", type="primary",
+                         disabled=not stale, use_container_width=True,
+                         help="Find the loosest setting that keeps every key moment."):
+                i = [x.tag for x in ss.results].index(tag)
+                ss.results[i] = tune_with_template(tag, s, cfg_now, run_opts, ss.infos.get(tag),
+                                                   admin.app_settings().templates if ss.get("use_templates", True) else [],
+                                                   moments=pending)
+                ss.curves.pop(tag, None)
+                ss.adopted.pop(tag, None)
+                ss.export_choice.pop(tag, None)
+                ss.table_v += 1
+                st.rerun()
+            if pending:
+                judged_ev = evaluate_config(s, judged_cfg, run_opts, noise=r.noise, moments=pending)
+                keeps = judged_ev.moments_total - judged_ev.moments_missed
+                st.markdown(f'<p class="pct-note">{what[0].upper() + what[1:]} keeps <b>{keeps} of '
+                            f'{judged_ev.moments_total}</b> key moments.'
+                            + (" Press <b>Retune</b> to update the proposal." if stale else "") + "</p>",
+                            unsafe_allow_html=True)
+            else:
+                st.markdown('<p class="pct-note">Mark the events this point must never lose (a trip, a peak, a step, '
+                            "an alarm) by clicking them on the trend, or press <b>Suggest</b>. <b>Retune</b> then finds the loosest "
+                            "setting that keeps every one.</p>", unsafe_allow_html=True)
 
 # --- Export ---------------------------------------------------------------
 
@@ -699,6 +794,11 @@ with tab_export:
             write_report(results, ss.series, run_opts, Path(d) / "report.html", selected=selected)
             st.download_button("Download HTML report", (Path(d) / "report.html").read_bytes(), "report.html",
                                "text/html", use_container_width=True)
+        if any(ss.moments.values()):
+            km = moments_frame({t: v for t, v in ss.moments.items() if v})
+            st.download_button(f"Download key moments ({len(km)})", km.to_csv(index=False), "moments.csv", "text/csv",
+                               use_container_width=True, help="Load it again with the CSV files, or pass it to "
+                                                               "`pict analyze --moments`.")
     with right:
         st.markdown(style.section("PI Builder sheet preview"), unsafe_allow_html=True)
         st.dataframe(pib.astype(object).where(pib.notna(), ""), hide_index=True, use_container_width=True)
