@@ -102,3 +102,16 @@ def test_results_report_compression_ratio_and_rms_error():
     row = results_frame([r]).iloc[0]
     assert row["RecommendedCompressionRatio"] > row["CurrentCompressionRatio"]
     assert row["RecommendedRMSError"] > 0
+
+
+def test_search_reaches_past_the_noise_grid_when_the_signal_jumps():
+    # Mostly tiny steps (small measured noise) with frequent large jumps, on a range far outside
+    # Zero/Span. The noise multiples alone top out near 32x noise while retention is still 100%.
+    rng = np.random.default_rng(3)
+    n = 6000
+    d = np.where(rng.random(n) < 0.7, rng.normal(0, 1, n), rng.normal(0, 600, n))
+    s = Series(np.arange(n) * 60.0, np.round(138000 + np.cumsum(d)))
+    r = tune_point("IOR", s, PointConfig(excdev=0.1, compdev=0.2, zero=0, span=100), TuneOptions(target=0.96))
+    assert r.noise < 2
+    assert r.recommended.config.compdev > 40 * r.noise
+    assert 0.96 <= r.recommended.score.retention < 0.99
