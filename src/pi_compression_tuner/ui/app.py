@@ -357,6 +357,9 @@ def effective(r):
 
 results = [effective(r) for r in ss.results]
 by_tag = {r.tag: r for r in results}
+# Points without a proposal (too few events, not moving) go last in the point picker.
+NO_PROPOSAL = (Classification.TOO_FEW_EVENTS.value, Classification.NOT_MOVING.value)
+tag_order = sorted(by_tag, key=lambda t: by_tag[t].classification.value in NO_PROPOSAL)
 
 tab_overview, tab_point, tab_export = st.tabs(["Overview", "Point detail", "Export"], key="main_tab", on_change="rerun")
 
@@ -414,9 +417,16 @@ with tab_overview:
                 unsafe_allow_html=True)
 
     st.markdown(style.section("Verdicts"), unsafe_allow_html=True)
+    verdicts_found = list(dict.fromkeys(r.classification.value for r in results))
+    # Rows with no proposal are blank across the table, so leave them out unless they are all there is.
+    default_shown = [c for c in verdicts_found if c not in NO_PROPOSAL] or verdicts_found
     shown = st.multiselect("Show verdicts", [c.value for c in Classification], label_visibility="collapsed",
-                           default=list(dict.fromkeys(r.classification.value for r in results)), key="class_filter",
+                           default=default_shown, key="class_filter",
                            placeholder="Filter by verdict")
+    hidden = sum(r.classification.value in NO_PROPOSAL and r.classification.value not in shown for r in results)
+    if hidden:
+        st.markdown(f'<p class="pct-note">{hidden} points with too few events or no movement have no proposal and '
+                    "are hidden. Add them in the filter to list them.</p>", unsafe_allow_html=True)
     df = results_frame(results)
     df.insert(0, "Export", [ss.export_choice.get(r.tag, r.changes and (r.ready_to_export or r.tag in ss.adopted))
                             for r in results])
@@ -452,7 +462,7 @@ with tab_overview:
 # --- Point detail ---------------------------------------------------------
 
 with tab_point:
-    tags = list(by_tag)
+    tags = tag_order
 
     def _step(d):
         ss.detail_tag = tags[(tags.index(ss.get("detail_tag", tags[0])) + d) % len(tags)]
