@@ -87,12 +87,15 @@ A key moment is an event the archive must never lose, such as a trip, a peak or 
 
 - **Mark them** in Point detail:
   - Click the trend to mark the nearest input event.
-  - Or press **Suggest**, which marks the main peaks, valleys and steps. Isolated spikes are left out.
+  - Or press **Suggest**, which marks the main peaks, valleys and steps, and each crossing of the point's alarm limits. Isolated spikes are left out.
+  - Alarm limits come from the settings CSV, or type them in the box next to **Suggest** (for example `20, 80`). A crossing counts once the smoothed signal gets two noise widths past the limit, so a signal sitting on the limit is not marked over and over. The trend and the report draw the limits as dashed lines.
   - Remove a moment from the list under the trend.
 - **Retune** finds the loosest setting that meets the target and also keeps every moment.
   - A moment counts as kept when the archive passes within one noise width beyond the noise band (or within 2% of the observed range, if that is larger) of the event itself or of the smoothed signal there.
   - A tighter error limit always wins.
   - Current settings that miss a moment are marked **Losing detail**.
+- **CompDev from moments:** with two or more moments, the tuner also reports the CompDev the moments alone imply, as a sanity check next to its own proposal. For each pair of consecutive moments it takes the largest distance of the smoothed signal from a straight line between them, then averages over the pairs (Method 1 in Silveira et al., 2012). A setting near that figure archives roughly the shape the moments draw. It is a guide only and never replaces the proposal.
+- The HTML report marks each key moment on the trend with an open diamond.
 - **Save and reuse them:**
   - Download them from the Export tab as `moments.csv` (`Tag,Timestamp`).
   - Load them again next to the CSV files in the UI, or pass them to `pict analyze --moments moments.csv`.
@@ -139,14 +142,14 @@ pict analyze capture/data.csv --config capture/config.csv --mode snapshot --serv
 ## Outputs
 
 - `report.html`: a summary, a table of every point linked to its own page, and one page per point in the same layout as the UI's Point detail tab: the finding, now-versus-proposed cards, the trend with a detail-lost strip and a zoom on the largest miss, the settings sheet and the signal profile. It works offline, follows the system's dark mode, and prints one point per page.
-- `results.csv`: current versus proposed settings, retention, maximum and RMS error, events per day, compression ratio, spike count, key moments missed, and notes.
+- `results.csv`: current versus proposed settings, retention, maximum and RMS error, events per day, compression ratio, spike count, key moments missed, the CompDev implied by the key moments, and notes.
 - `pibuilder.csv`: one row per changed point, in PI Builder format. Rows that are ready to export are pre-selected with `x`. Review it in Excel, then publish with PI Builder.
 
 ## Input formats
 
 - **Data**, long format: `Tag,Timestamp,Value`. Wide format: `Timestamp,<tag1>,<tag2>,...`. Non-numeric values (system states) are dropped.
 - **Key moments** (optional): `Tag,Timestamp`, one row per moment.
-- **Config**: one row per point, with PI attribute names as headers (case-insensitive): `Name, ExcDev, ExcMin, ExcMax, CompDev, CompMin, CompMax, Compressing, Step, Zero, Span`. `ExcDevPercent` and `CompDevPercent` are used only when the deviation in engineering units is missing.
+- **Config**: one row per point, with PI attribute names as headers (case-insensitive): `Name, ExcDev, ExcMin, ExcMax, CompDev, CompMin, CompMax, Compressing, Step, Zero, Span`. `ExcDevPercent` and `CompDevPercent` are used only when the deviation in engineering units is missing. Optional alarm limits go in `LoLo`, `Lo`, `Hi` and `HiHi` columns, or in one `AlarmLimits` column with values separated by semicolons. PI Points do not carry alarm limits themselves, so they are not read from PI.
 
 ## Checking the simulator against real PI
 

@@ -78,6 +78,10 @@ def signal_profile(r: TuneResult, s: Series, cfg: PointConfig) -> list[tuple[str
     items.append(("Isolated spikes", f"{r.spikes:,}"))
     if r.moments:
         items.append(("Key moments", f"{len(r.moments)}"))
+    if r.moment_compdev is not None:
+        items.append(("CompDev from moments", f"{r.moment_compdev:.3g}"))
+    if cfg.alarm_limits:
+        items.append(("Alarm limits", ", ".join(f"{x:g}" for x in cfg.alarm_limits)))
     prop = proposal(r)
     if prop is not None and r.noise > 0:
         items.append(("Proposed CompDev", f"{prop.config.compdev / r.noise:.1f}× noise σ"))

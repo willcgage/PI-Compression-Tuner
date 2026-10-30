@@ -26,6 +26,7 @@ def results_frame(results: list[TuneResult]) -> pd.DataFrame:
             "Noise": r.noise,
             "Spikes": r.spikes,
             "KeyMoments": len(r.moments),
+            "MomentCompDev": r.moment_compdev,
         }
         for prefix, ev in (("Current", cur), ("Recommended", rec)):
             row.update({

@@ -11,6 +11,7 @@ Recommendations only: nothing here writes to PI.
 from __future__ import annotations
 
 import dataclasses
+import re
 import tempfile
 from collections import Counter
 from pathlib import Path
@@ -498,6 +499,10 @@ with tab_point:
             if len(mi):
                 fig.add_scatter(x=ts(s.t[mi]), y=s.v[mi], name="Key moment", mode="markers", row=1, col=1,
                                 marker=dict(size=12, symbol="diamond-open", color=INK["probe"], line=dict(width=2)))
+            for lim in cfg_now.alarm_limits:
+                fig.add_hline(y=lim, line=dict(color=INK["probe"], width=1, dash="dash"), row=1, col=1,
+                              annotation_text=f"Alarm {lim:g}", annotation_font_color=INK["probe"],
+                              annotation_position="top left")
             fig.add_scatter(x=ts(xt), y=xv, name="Detail lost", fill="tozeroy", fillcolor="rgba(208,87,74,0.25)",
                             line=dict(color=INK["loss"], width=1), row=2, col=1)
             # Plotly reports a click for selection only on markers and only with closest-point hover,
@@ -533,7 +538,7 @@ with tab_point:
                         "around the biggest error, with each archived event marked.</p>", unsafe_allow_html=True)
 
             st.markdown(style.section("Key moments"), unsafe_allow_html=True)
-            k1, k2, k3 = st.columns([8, 2, 3], vertical_alignment="bottom")
+            k1, k4, k2, k3 = st.columns([7, 3, 2, 3], vertical_alignment="bottom")
             fmt = lambda t: pd.to_datetime(t, unit="s", utc=True).strftime("%b %d %H:%M:%S")  # noqa: E731
             kept = k1.multiselect("Key moments", pending, default=pending, format_func=fmt, key=f"km_{tag}_{ss.km_v}",
                                   label_visibility="collapsed", placeholder="Click the trend, or press Suggest")
@@ -541,9 +546,20 @@ with tab_point:
                 ss.moments[tag] = sorted(kept)
                 ss.km_v += 1
                 st.rerun()
+            lim_text = k4.text_input("Alarm limits", ", ".join(f"{x:g}" for x in cfg_now.alarm_limits),
+                                     key=f"lim_{tag}_{ss.km_v}", placeholder="Alarm limits, e.g. 20, 80", label_visibility="collapsed",
+                                     help="Lo, Hi, LoLo and HiHi, separated by commas. Suggest marks each crossing.")
+            try:
+                limits = tuple(sorted({float(x) for x in re.split(r"[;,\s]+", lim_text.strip()) if x}))
+            except ValueError:
+                limits = cfg_now.alarm_limits
+                k4.caption("Use numbers separated by commas.")
+            if limits != cfg_now.alarm_limits:
+                ss.configs[tag] = dataclasses.replace(cfg_now, alarm_limits=limits)
+                st.rerun()
             if k2.button("Suggest", key=f"km_suggest_{tag}", use_container_width=True,
-                         help="Mark the main peaks, valleys and steps."):
-                ss.moments[tag] = sorted(set(pending) | set(suggest_moments(s, r.noise).tolist()))
+                         help="Mark the main peaks, valleys and steps, and each alarm-limit crossing."):
+                ss.moments[tag] = sorted(set(pending) | set(suggest_moments(s, r.noise, limits=limits).tolist()))
                 ss.km_v += 1
                 st.rerun()
             stale = tuple(pending) != tuple(r.moments)
@@ -566,8 +582,8 @@ with tab_point:
                             + (" Press <b>Retune</b> to update the proposal." if stale else "") + "</p>",
                             unsafe_allow_html=True)
             else:
-                st.markdown('<p class="pct-note">Mark the events this point must never lose (a trip, a peak, a step) '
-                            "by clicking them on the trend, or press <b>Suggest</b>. <b>Retune</b> then finds the loosest "
+                st.markdown('<p class="pct-note">Mark the events this point must never lose (a trip, a peak, a step, '
+                            "an alarm) by clicking them on the trend, or press <b>Suggest</b>. <b>Retune</b> then finds the loosest "
                             "setting that keeps every one.</p>", unsafe_allow_html=True)
 
 # --- Export ---------------------------------------------------------------

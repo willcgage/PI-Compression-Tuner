@@ -1,7 +1,11 @@
 import numpy as np
 
 from pi_compression_tuner import PointConfig, Series, evaluate_config, tune_point
-from pi_compression_tuner.moments import find_spikes, moments_frame, read_moments, suggest_moments
+from pi_compression_tuner.moments import (alarm_crossings, find_spikes, implied_compdev, moments_frame, read_moments,
+                                          suggest_moments)
+from pi_compression_tuner.report import write_report
+from pi_compression_tuner.sources.csvfiles import read_configs
+from pi_compression_tuner.tune import TuneOptions
 
 
 def _wave(noise=0.05, seed=0):
@@ -66,3 +70,66 @@ def test_moments_round_trip_through_csv(tmp_path):
     back = read_moments(path)
     assert set(back) == {"A", "B"}
     assert np.allclose(back["A"], moments["A"]) and np.allclose(back["B"], moments["B"])
+
+
+def test_alarm_crossings_are_found_once_each():
+    s = _wave()
+    # 50 + 10 sin over four 6-hour cycles crosses 55 going up at 0.5 h + 6k h and down at 2.5 h + 6k h.
+    c = alarm_crossings(s, (55.0,), 0.05)
+    expected = np.sort(np.concatenate([np.arange(4) * 6 + 0.5, np.arange(4) * 6 + 2.5])) * 3600
+    assert len(c) == len(expected)
+    assert np.all(np.abs(c - expected) < 120)
+    assert len(alarm_crossings(s, (75.0,), 0.05)) == 0  # never reached
+
+
+def test_a_signal_sitting_on_a_limit_is_not_marked_over_and_over():
+    rng = np.random.default_rng(0)
+    t = np.arange(0.0, 86400.0, 10.0)
+    s = Series(t, 55 + rng.normal(0, 0.05, len(t)))
+    assert len(alarm_crossings(s, (55.0,), 0.05)) == 0
+
+
+def test_suggest_adds_alarm_crossings():
+    s = _wave()
+    plain = suggest_moments(s, 0.05)
+    with_limits = suggest_moments(s, 0.05, limits=(55.0,))
+    assert len(with_limits) == len(plain) + 8
+    assert set(plain.tolist()) <= set(with_limits.tolist())
+
+
+def test_implied_compdev_is_the_average_bulge_between_moments():
+    t = np.arange(0.0, 3601.0, 10.0)
+    # A triangle from 0 up to 10 and back: the straight line between the ends misses the apex by 10.
+    v = np.where(t <= 1800, t / 180, (3600 - t) / 180)
+    s = Series(t, v)
+    assert abs(implied_compdev(s, [0.0, 3600.0]) - 10) < 0.2
+    assert implied_compdev(s, [0.0, 1800.0, 3600.0]) < 0.2  # moments at the corners: nothing in between
+    assert implied_compdev(s, [0.0]) is None
+
+
+def test_moment_compdev_is_reported():
+    s = _wave(noise=0.2)
+    r = tune_point("A", s, PointConfig(compdev=0.001, span=100), moments=suggest_moments(s, 0.2))
+    assert r.moment_compdev is not None and r.moment_compdev > 0
+    assert any("imply CompDev" in n for n in r.notes)
+
+
+def test_alarm_limits_are_read_from_settings(tmp_path):
+    path = tmp_path / "config.csv"
+    path.write_text("Name,CompDev,Lo,Hi,HiHi\nA,1,20,80,95\nB,1,,,\n")
+    cfg = read_configs(path)
+    assert cfg["A"].alarm_limits == (20.0, 80.0, 95.0)
+    assert cfg["B"].alarm_limits == ()
+    path.write_text("Name,CompDev,AlarmLimits\nA,1,20; 80\n")
+    assert read_configs(path)["A"].alarm_limits == (20.0, 80.0)
+
+
+def test_report_marks_key_moments_and_alarm_limits(tmp_path):
+    s = _wave()
+    cfg = PointConfig(compdev=0.001, span=100, alarm_limits=(55.0,))
+    r = tune_point("A", s, cfg, moments=suggest_moments(s, 0.05, limits=cfg.alarm_limits))
+    write_report([r], {"A": s}, TuneOptions(), tmp_path / "report.html")
+    doc = (tmp_path / "report.html").read_text()
+    assert doc.count('stroke="var(--mark)" stroke-width="2"') >= len(r.moments)
+    assert 'stroke-dasharray="5 4"' in doc
+    assert "Key moment" in doc and "Alarm limit" in doc
