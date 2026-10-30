@@ -107,3 +107,18 @@ def test_pi_config_saves_settings_that_later_commands_use(monkeypatch):
 def test_pi_commands_need_a_server():
     res = CliRunner().invoke(main, ["pi", "check"])
     assert res.exit_code == 2 and "pict pi config --server" in res.output
+
+
+def test_duplicates_command(tmp_path):
+    import numpy as np
+    t = pd.date_range("2026-01-01", periods=500, freq="1min", tz="UTC")
+    v = np.sin(np.arange(500) / 30)
+    other = np.cos(np.arange(500) / 7) + np.arange(500) / 100
+    df = pd.concat([pd.DataFrame({"Tag": tag, "Timestamp": t, "Value": vals})
+                    for tag, vals in [("tag_123.value", v), ("tag_123.scaled", v), ("other", other)]])
+    df.to_csv(tmp_path / "data.csv", index=False)
+    res = CliRunner().invoke(main, ["duplicates", str(tmp_path / "data.csv"), "--out", str(tmp_path / "dup.csv")])
+    assert res.exit_code == 0, res.output
+    assert "Exact copy" in res.output and "1 group," in res.output
+    got = pd.read_csv(tmp_path / "dup.csv")
+    assert set(got[["Point A", "Point B"]].iloc[0]) == {"tag_123.value", "tag_123.scaled"}

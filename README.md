@@ -105,6 +105,19 @@ Templates are added, edited, turned on or off and removed in the Admin page's ta
 
 Recording the snapshot stream takes hours to days, so it stays a command-line job (`pict pi record`). Load its output into the UI as CSV files.
 
+### Duplicate points
+
+The sidebar's **Find duplicate points** opens a page that looks for loaded points storing the same signal under two names, such as `tag_123.value` and `tag_123.scaled` holding identical values. The data decides:
+
+- **Exact copy:** the same events, at the same timestamps, with the same values.
+- **Same signal:** the same values over time, archived with different timestamps (for example, different exception or compression settings).
+- **Scaled copy:** one point is a straight-line rescale of the other (raw counts and engineering units). The fit is shown, e.g. `FT1.raw = 65.5 × FT1.eu`.
+- **Moves together** (optional): very closely correlated but not a copy, such as redundant transmitters.
+
+Names and attributes are shown as hints: the same base name once endings like `.value`, `.pv`, `.scaled` or `_raw` are dropped, the same instrument tag and point source, the same description, or different units. Look-alike names whose data can't be compared (flat, empty or not overlapping) are listed to check by hand. Each group suggests a point to keep (the plainest name, then the most events) and counts the archive events per day the copies add. Nothing is changed in PI; check what uses each name before retiring one.
+
+From the command line: `pict duplicates data.csv --config config.csv` for files, or `pict pi duplicates --filter "FIC*" --start "*-7d"` to read from PI. Both write `duplicates.csv`. Compare points from one interface or area over the same period.
+
 ## Try the command line without PI
 
 ```bash
