@@ -42,7 +42,11 @@ def results_frame(results: list[TuneResult]) -> pd.DataFrame:
             row["EventChangePercent"] = None
         row["Notes"] = " ".join(r.notes)
         rows.append(row)
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    # Points without settings (too few events, not moving) leave gaps: keep the columns numeric, with NaN.
+    numeric = [c for c in df.columns if c.startswith(("Current", "Recommended")) or c == "EventChangePercent"]
+    df[numeric] = df[numeric].apply(pd.to_numeric, errors="coerce").astype(float)
+    return df
 
 
 def write_results_csv(results: list[TuneResult], path: str | Path) -> None:

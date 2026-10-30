@@ -126,3 +126,30 @@ def test_point_detail_navigation_and_zoom():
     assert any("Archive events per day" in m.value for m in at.markdown)
     at.button_group(key=f"view_{tag}").set_value("Largest miss").run()
     assert not at.exception, at.exception
+
+
+def test_points_with_too_few_events_render(monkeypatch):
+    from pi_compression_tuner.models import Series
+    from pi_compression_tuner.sources import connect as connect_mod
+
+    class FewPI(FakePI):
+        def recorded(self, ref, start, end):
+            s = self.series[ref.name]
+            return Series(s.t[:10], s.v[:10]) if ref.name != "DEMO.FLOW.PV" else Series([], [])
+
+    fake = FewPI()
+    monkeypatch.setattr(connect_mod, "connect", lambda *a, **k: connect_mod.Connection(fake, "afsdk"))
+    at = AppTest.from_file(APP, default_timeout=120)
+    at.run()
+    at.radio(key="origin").set_value("PI server").run()
+    at.text_input(key="pi_server").input("PISRV").run()
+    at.text_input(key="pi_search").input("DEMO")
+    at.button(key="pi_search_go").click().run()
+    at.button(key="pi_pick_all").click().run()
+    at.button(key="load_pi").click().run()
+    assert at.warning and "1 of 4 points came back with no numeric values" in at.warning[0].value
+    at.button(key="run").click().run()
+    assert not at.exception, at.exception
+    for tag in ("DEMO.TEMP.PV", "DEMO.FLOW.PV"):
+        at.selectbox(key="detail_tag").set_value(tag).run()
+        assert not at.exception, at.exception

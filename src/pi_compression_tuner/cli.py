@@ -196,7 +196,9 @@ def check(server, source, url, auth, ca_bundle, insecure, afsdk_dir, name_filter
                 ref = src.point(server, tag)
                 a = src.attributes(ref)
                 settings = ", ".join(f"{k}={a.get(k.lower())}" for k in ("ExcDev", "CompDev", "Compressing", "Span", "PointType"))
-                click.echo(f"  {tag}: {settings}; {src.event_count(ref, '*-1d', '*')} archive events in the last day.")
+                n_read = len(src.recorded(ref, "*-1d", "*"))
+                click.echo(f"  {tag}: {settings}; {src.event_count(ref, '*-1d', '*')} archive events in the last day, "
+                           f"{n_read} numeric values read.")
             working += 1
         except Exception as e:  # report every failure, then carry on to the next source
             click.echo(f"{label}: failed ({type(e).__name__}: {e})")

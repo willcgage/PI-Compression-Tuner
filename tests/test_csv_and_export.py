@@ -41,3 +41,19 @@ def test_exports(tmp_path):
     assert r.loc[0, "Classification"] == "Storing noise"
     assert n == 1 and b.loc[0, "Name"] == "A" and b.loc[0, "Parent"] == "PISRV" and b.loc[0, "Selected(x)"] == "x"
     assert list(b.columns[:4]) == ["Selected(x)", "Parent", "Name", "ObjectType"]
+
+
+def test_results_frame_stays_numeric_when_no_point_has_settings():
+    import numpy as np
+    import pandas as pd
+
+    from pi_compression_tuner.export import results_frame
+    from pi_compression_tuner.models import PointConfig, Series
+    from pi_compression_tuner.tune import TuneOptions, tune_point
+
+    t = pd.date_range("2026-01-01", periods=10, freq="h", tz="UTC")
+    few = Series.from_pandas(pd.Series(np.arange(10.0), index=t))
+    df = results_frame([tune_point("A", few, PointConfig(), TuneOptions()),
+                        tune_point("B", Series([], []), PointConfig(), TuneOptions())])
+    assert df["CurrentEventsPerDay"].dtype == float and df["CurrentEventsPerDay"].isna().all()
+    df["CurrentEventsPerDay"].round()  # what the UI does; raised TypeError on None before

@@ -226,6 +226,11 @@ with st.sidebar:
                 refs = [found[t] for t in picked] + [conn.source.point(server.strip(), t) for t in pasted if t not in picked]
                 ss.series, ss.configs, ss.source_note = _load_pi(refs, start, end)
                 _reset_results()
+                empty = [t for t, sr in ss.series.items() if len(sr) == 0]
+                if empty:
+                    st.warning(f"{len(empty)} of {len(ss.series)} points came back with no numeric values between "
+                               f"{start} and {end}: {', '.join(empty[:5])}{' …' if len(empty) > 5 else ''}. "
+                               "Check them in PI, or compare with `pict pi check --tag NAME`.")
             except Exception as e:
                 st.error(f"Could not read from PI: {e}")
 

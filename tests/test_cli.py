@@ -43,6 +43,9 @@ def test_pi_check_reports_each_source(monkeypatch):
         def event_count(self, ref, start, end):
             return 1440
 
+        def recorded(self, ref, start, end):
+            return [0.0] * 1439
+
     class BadSDK:
         def __init__(self, *a, **k):
             raise ImportError("OSIsoft.AFSDK was not found")
@@ -51,7 +54,7 @@ def test_pi_check_reports_each_source(monkeypatch):
     monkeypatch.setattr(afsdk, "AFSDK", BadSDK)
     res = CliRunner().invoke(main, ["pi", "check", "--server", "SRV", "--url", "https://pi/piwebapi", "--tag", "SINUSOID"])
     assert res.exit_code == 0, res.output
-    assert "PI Web API: OK" in res.output and "SINUSOID" in res.output and "1440 archive events" in res.output
+    assert "PI Web API: OK" in res.output and "SINUSOID" in res.output and "1440 archive events in the last day, 1439 numeric values read" in res.output
     assert "AF SDK: failed (ImportError" in res.output
 
 

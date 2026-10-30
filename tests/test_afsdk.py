@@ -108,3 +108,27 @@ def test_snapshot_pipe_drains_full_batches_and_closes():
     out = src.record_snapshots([ref], duration_s=0, poll_s=0)
     assert len(out["TAG1"]) == 25000
     assert calls == [10000, 10000, 10000, "close", "dispose"]
+
+
+def test_boxed_dotnet_numbers_are_read_and_digital_states_dropped():
+    from pi_compression_tuner.sources.afsdk import _num
+
+    class Boxed:  # a .NET System.Single that float() refuses, as pythonnet can return
+        def GetType(self):
+            return NS(Name="Single")
+
+        def __float__(self):
+            raise TypeError("float() argument must be a string or a real number")
+
+    class State:
+        def GetType(self):
+            return NS(Name="AFEnumerationValue")
+
+    def val(v, good=True, as_double=None):
+        return NS(IsGood=good, Value=v, ValueAsDouble=lambda: as_double)
+
+    assert _num(val(Boxed(), as_double=12.5)) == 12.5
+    assert _num(val(3)) == 3.0
+    assert _num(val(State(), as_double=248.0)) is None
+    assert _num(val(1.0, good=False)) is None
+    assert _num(val(True)) is None

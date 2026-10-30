@@ -54,15 +54,22 @@ def _ts(af_value) -> str:
 
 
 def _num(af_value):
+    """The value as a float, or None for bad values, digital states and other non-numeric values."""
     if not af_value.IsGood:
         return None
-    try:
-        v = af_value.Value
-        if isinstance(v, bool):
-            return None
+    v = af_value.Value
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
         return float(v)
-    except (TypeError, ValueError):
-        return None  # digital states and other non-numeric values
+    # pythonnet can hand back a boxed .NET number (System.Single, Int32, ...) that float() refuses;
+    # AFValue.ValueAsDouble converts those. Enumeration values (digital states) are not numbers.
+    try:
+        if "Enumeration" in str(v.GetType().Name):
+            return None
+        return float(af_value.ValueAsDouble())
+    except Exception:
+        return None
 
 
 def _series(af_values) -> Series:
