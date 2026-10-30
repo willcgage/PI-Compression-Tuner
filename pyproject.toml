@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pi-compression-tuner"
+version = "0.1.0"
+description = "Recommend exception and compression settings for PI Points from observed signal behavior."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "click>=8.1",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+kerberos = ["requests-negotiate-sspi; sys_platform == 'win32'", "requests-kerberos; sys_platform != 'win32'"]
+afsdk = ["pythonnet>=3.0; sys_platform == 'win32'"]
+ui = ["streamlit>=1.66", "plotly>=5.18"]
+dev = ["pytest>=7", "streamlit>=1.66", "plotly>=5.18"]
+
+[project.scripts]
+pict = "pi_compression_tuner.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pi_compression_tuner = ["ui/*.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
