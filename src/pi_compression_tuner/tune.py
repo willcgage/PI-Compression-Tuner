@@ -7,8 +7,10 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 
 import numpy as np
+import pandas as pd
 
 from .metrics import Score, estimate_noise, retention_score, reconstruct
+from .moments import find_spikes, moment_index, smooth
 from .models import PointConfig, Series
 from .simulate import simulate_archive
 
@@ -52,6 +54,7 @@ class TuneOptions:
     excdev_ratios: tuple = (0.1, 0.25, 0.5, 0.75, 1.0)
     excdev_noise_floor: float = 1.0
     robust_margin: float = 0.9
+    moment_range_pct: float = 2.0
     max_error: float | None = None           # engineering units
     max_error_pct_span: float | None = None  # percent of span
     under_ratio: float = 2.0
@@ -75,6 +78,9 @@ class Evaluation:
     events_per_day: float
     archive_ratio: float  # archived events / input events
     score: Score
+    moments_missed: int = 0  # key moments the archive misses by more than the tolerance
+    moments_total: int = 0
+    worst_at: int = -1       # index of the largest error
 
     @property
     def compression_ratio(self) -> float:
@@ -92,6 +98,8 @@ class TuneResult:
     input_events: int
     ready_to_export: bool = False
     notes: list = field(default_factory=list)
+    moments: tuple = ()  # key moment timestamps the result was tuned to keep
+    spikes: int = 0      # isolated one-event spikes in the input
 
     @property
     def changes(self) -> bool:
@@ -117,12 +125,16 @@ def _round_sig(x: float, sig: int = 2) -> float:
 
 
 class _Evaluator:
-    def __init__(self, series: Series, opts: TuneOptions, noise: float, step: bool):
+    def __init__(self, series: Series, opts: TuneOptions, noise: float, step: bool,
+                 moments=(), moment_tol: float | None = None):
         self.series = series
         self.opts = opts
         self.noise = noise
         self.step = step
         self.days = max(series.duration, 1.0) / SECONDS_PER_DAY
+        self.moment_idx = moment_index(series, moments)
+        self.moment_tol = opts.noise_band * noise if moment_tol is None else moment_tol
+        self.smoothed = smooth(series.v) if len(self.moment_idx) else None
 
     def __call__(self, config: PointConfig) -> Evaluation:
         s = self.series
@@ -131,15 +143,23 @@ class _Evaluator:
         recon = reconstruct(s.t[vis], s.v[vis], s.t, step=self.step)
         score = retention_score(s, recon, self.noise, self.opts.window_s, self.opts.percentile, self.opts.noise_band)
         n_arch = len(sim.archived)
-        return Evaluation(config, n_arch, n_arch / self.days, n_arch / max(len(s), 1), score)
+        err = np.abs(s.v - recon)
+        missed = 0
+        if len(self.moment_idx):
+            # Kept when the archive lands near the event itself or near the smoothed signal there.
+            at = recon[self.moment_idx]
+            miss = np.minimum(err[self.moment_idx], np.abs(self.smoothed[self.moment_idx] - at))
+            missed = int(np.sum(miss > self.moment_tol * (1 + 1e-9)))
+        return Evaluation(config, n_arch, n_arch / self.days, n_arch / max(len(s), 1), score,
+                          missed, len(self.moment_idx), int(np.argmax(err)) if len(err) else -1)
 
 
 def evaluate_config(series: Series, config: PointConfig, opts: TuneOptions = TuneOptions(),
-                    noise: float | None = None) -> Evaluation:
+                    noise: float | None = None, moments=()) -> Evaluation:
     """Score one set of settings against a series, for what-if checks of custom values."""
     if noise is None:
         noise = estimate_noise(series.v)
-    return _Evaluator(series, opts, noise, config.step)(config)
+    return _Evaluator(series, opts, noise, config.step, moments, _moment_tol(opts, noise, config.span, float(np.ptp(series.v)) if len(series) else 0.0))(config)
 
 
 def tradeoff_curve(series: Series, current: PointConfig, opts: TuneOptions = TuneOptions(), noise: float | None = None,
@@ -179,11 +199,28 @@ def _error_limit(opts: TuneOptions, span: float) -> float:
     return min(limits) if limits else math.inf
 
 
-def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions = TuneOptions()) -> TuneResult:
-    """Evaluate the current settings for one point and search for recommended ones."""
+def _moment_tol(opts: TuneOptions, noise: float, span: float, observed_range: float) -> float:
+    """How far the archive may miss a key moment, measured against the smoothed signal.
+
+    One noise width past the noise band, or ``moment_range_pct`` of the observed range if
+    larger, so a peak may lose its noisy tip but not its height. A tighter error limit wins.
+    """
+    tol = max((opts.noise_band + 1) * noise, opts.moment_range_pct / 100.0 * observed_range)
+    return min(tol, _error_limit(opts, span))
+
+
+def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions = TuneOptions(),
+               moments=()) -> TuneResult:
+    """Evaluate the current settings for one point and search for recommended ones.
+
+    ``moments`` are timestamps (seconds since the epoch) of key moments: events the
+    proposed archive must reproduce within the noise band (or the error limit, if
+    tighter). Each snaps to the nearest input event.
+    """
     n = len(series)
     noise = estimate_noise(series.v) if n else 0.0
     notes: list[str] = []
+    moments = tuple(float(series.t[i]) for i in moment_index(series, moments)) if n else ()
 
     if n < opts.min_events:
         return TuneResult(tag, Classification.TOO_FEW_EVENTS, None, None, noise, n,
@@ -192,12 +229,13 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
         return TuneResult(tag, Classification.NOT_MOVING, None, None, noise, n,
                           notes=["The value never changes in this window. Check the instrument or interface."])
 
-    evaluate = _Evaluator(series, opts, noise, current.step)
+    evaluate = _Evaluator(series, opts, noise, current.step, moments, _moment_tol(opts, noise, current.span, float(np.ptp(series.v))))
     current_eval = evaluate(current)
     limit = _error_limit(opts, current.span)
+    spikes = find_spikes(series.v, noise)
 
     def feasible(ev: Evaluation) -> bool:
-        return ev.score.retention >= opts.target and ev.score.max_error <= limit
+        return ev.score.retention >= opts.target and ev.score.max_error <= limit and ev.moments_missed == 0
 
     # Candidate CompDev values: multiples of the measured noise, plus common span percentages.
     cands = {noise * m for m in opts.noise_multiples}
@@ -285,7 +323,8 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
     if recommended is None:
         cls = Classification.LITTLE_TO_GAIN
         notes.append(f"No tested setting reaches {opts.target:.0%} retention"
-                     + ("" if math.isinf(limit) else f" within the {limit:g} error limit") + ".")
+                     + ("" if math.isinf(limit) else f" within the {limit:g} error limit")
+                     + (" while keeping every key moment" if moments else "") + ".")
     elif zero_span_issue:
         cls = Classification.RANGE_MISMATCH
     elif recommended.archive_ratio > opts.hard_archive_ratio:
@@ -314,6 +353,20 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
                      "so the interface passes noise on to the server.")
     if not current.compressing:
         notes.append("Compression is currently off for this point.")
+    if moments:
+        if current_eval.moments_missed:
+            notes.append(f"Current settings miss {current_eval.moments_missed} of {len(moments)} key moments.")
+        if recommended is not None:
+            notes.append(f"The proposal keeps all {len(moments)} key moments.")
+    if len(spikes):
+        notes.append(f"{len(spikes)} isolated spike{'s' if len(spikes) > 1 else ''} (one event jumping "
+                     "6 or more noise widths and straight back). Check whether they are real events or "
+                     "instrument faults; compression usually archives them.")
+    judged = recommended or current_eval
+    if len(spikes) and judged.worst_at in set(spikes.tolist()):
+        when = pd.to_datetime(series.t[judged.worst_at], unit="s", utc=True).strftime("%Y-%m-%d %H:%M:%S")
+        notes.append(f"The largest error is at an isolated spike ({when} UTC). Check whether it is a real event "
+                     "or an instrument fault; mark it as a key moment to keep it.")
 
     safe = cls in (Classification.STORING_NOISE, Classification.LOSING_DETAIL)
-    return TuneResult(tag, cls, current_eval, recommended, noise, n, safe, notes)
+    return TuneResult(tag, cls, current_eval, recommended, noise, n, safe, notes, moments, len(spikes))

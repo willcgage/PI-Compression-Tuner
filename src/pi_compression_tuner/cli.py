@@ -12,6 +12,7 @@ import pandas as pd
 from . import __version__
 from .export import write_pibuilder_csv, write_results_csv
 from .models import PointConfig
+from .moments import read_moments
 from .report import write_report
 from .sources.csvfiles import read_configs, read_series
 from .tune import TuneOptions, tune_point
@@ -45,12 +46,16 @@ def main():
 @click.option("--max-error-pct-span", type=float, help="Largest allowed error, percent of span.")
 @click.option("--excdev-ratio", type=float,
               help="Raw mode: fix ExcDev at ratio x CompDev. By default ratios from 0.1 to 1 are searched.")
+@click.option("--moments", "moments_path", type=click.Path(exists=True, dir_okay=False),
+              help="CSV of key moments (Tag, Timestamp) that each proposal must keep.")
 @click.option("--server", default="", help="Data Archive name to put in the PI Builder Parent column.")
 @click.option("--out", "out_dir", type=click.Path(file_okay=False), default="out", show_default=True)
-def analyze(data, config_path, mode, target, window, percentile, max_error, max_error_pct_span, excdev_ratio, server, out_dir):
+def analyze(data, config_path, mode, target, window, percentile, max_error, max_error_pct_span, excdev_ratio,
+            moments_path, server, out_dir):
     """Analyze DATA (CSV) and write results.csv, pibuilder.csv and report.html."""
     series = read_series(data)
     configs = read_configs(config_path) if config_path else {}
+    moments = read_moments(moments_path) if moments_path else {}
     opts = TuneOptions(target=target, input_mode=mode, window_s=_duration(window), percentile=percentile,
                        max_error=max_error, max_error_pct_span=max_error_pct_span, excdev_ratio=excdev_ratio)
     results = []
@@ -60,7 +65,7 @@ def analyze(data, config_path, mode, target, window, percentile, max_error, max_
             if cfg is None:
                 click.echo(f"\nNo settings for {tag}; assuming PI defaults.", err=True)
                 cfg = PointConfig()
-            results.append(tune_point(tag, s, cfg, opts))
+            results.append(tune_point(tag, s, cfg, opts, moments=moments.get(tag, ())))
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     write_results_csv(results, out / "results.csv")
