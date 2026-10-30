@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from typing import Callable, Protocol
 
 from ..models import PointConfig, Series
@@ -25,9 +26,41 @@ class PointRef:
     pointclass: str = field(default="", compare=False)
 
 
+MAX_SCAN = 100_000  # most point names a search with attribute filters reads before it stops
+
+
+def text_matches(pattern: str, value: str, contains: bool = False) -> bool:
+    """Case-insensitive match. ``*`` and ``?`` are wildcards; plain text must equal the value, or with
+    ``contains`` appear anywhere in it. An empty pattern matches everything."""
+    pattern = (pattern or "").strip().lower()
+    value = (value or "").strip().lower()
+    if not pattern:
+        return True
+    if any(c in pattern for c in "*?"):
+        return fnmatchcase(value, pattern)
+    return pattern in value if contains else pattern == value
+
+
+@dataclass(frozen=True)
+class PointFilter:
+    """What a point search asks for besides the tag mask. Descriptor text matches anywhere in the description."""
+
+    pointsource: str = ""
+    engunits: str = ""
+    descriptor: str = ""
+
+    def __bool__(self) -> bool:
+        return any(x.strip() for x in (self.pointsource, self.engunits, self.descriptor))
+
+    def keeps(self, ref: PointRef) -> bool:
+        """Descriptor and units checks (point source is checked separately, where it is read)."""
+        return text_matches(self.engunits, ref.engunits) and text_matches(self.descriptor, ref.descriptor, contains=True)
+
+
 class PISource(Protocol):
     def check(self, server: str) -> None: ...
-    def find_points(self, server: str, name_filter: str = "*", max_count: int = 1000) -> list[PointRef]: ...
+    def find_points(self, server: str, name_filter: str = "*", max_count: int = 1000,
+                    where: PointFilter = PointFilter()) -> list[PointRef]: ...
     def point(self, server: str, tag: str) -> PointRef: ...
     def attributes(self, ref: PointRef) -> dict: ...
     def config(self, ref: PointRef) -> PointConfig: ...

@@ -15,7 +15,7 @@ import pandas as pd
 import requests
 
 from ..models import PointConfig, Series
-from .base import PointRef
+from .base import MAX_SCAN, PointFilter, PointRef, text_matches
 
 CONFIG_ATTRIBUTES = (
     "excdev", "excmin", "excmax", "compdev", "compmin", "compmax",
@@ -58,22 +58,46 @@ class PIWebAPI:
     def data_server_webid(self, server: str) -> str:
         return self._get("dataservers", path=f"\\\\{server}")["WebId"]
 
-    def find_points(self, server: str, name_filter: str = "*", max_count: int = 1000) -> list[PointRef]:
+    def find_points(self, server: str, name_filter: str = "*", max_count: int = 1000,
+                    where: PointFilter = PointFilter()) -> list[PointRef]:
+        """Points whose name matches ``name_filter`` and, if given, the point source, units and description in ``where``.
+
+        The PI Web API filters on the name only, so the other filters are applied here, reading up to
+        :data:`MAX_SCAN` names. Point source isn't in the point listing; it is read for each point that passes
+        the other filters. ``last_search`` records how many names were read and whether the scan stopped early.
+        """
         ds = self.data_server_webid(server)
         out: list[PointRef] = []
-        start = 0
-        page = min(max_count, 1000)
+        start = scanned = 0
+        page = 1000 if where else min(max_count, 1000)
+        capped = False
         while len(out) < max_count:
-            items = self._get(f"dataservers/{ds}/points", nameFilter=name_filter, startIndex=start, maxCount=page,
+            items = self._get(f"dataservers/{ds}/points", nameFilter=name_filter or "*", startIndex=start, maxCount=page,
                               selectedFields="Items.Name;Items.WebId;Items.Path;Items.Descriptor;Items.EngineeringUnits;"
                                              "Items.PointType;Items.PointClass").get("Items", [])
-            out += [PointRef(i["Name"], i["WebId"], i.get("Path", ""), i.get("Descriptor") or "",
-                             i.get("EngineeringUnits") or "", str(i.get("PointType") or ""),
-                             i.get("PointClass") or "") for i in items]
+            scanned += len(items)
+            for i in items:
+                ref = PointRef(i["Name"], i["WebId"], i.get("Path", ""), i.get("Descriptor") or "",
+                               i.get("EngineeringUnits") or "", str(i.get("PointType") or ""), i.get("PointClass") or "")
+                if not where.keeps(ref):
+                    continue
+                if where.pointsource.strip() and not text_matches(where.pointsource, self._attribute(ref, "pointsource")):
+                    continue
+                out.append(ref)
+                if len(out) >= max_count:
+                    break
             if len(items) < page:
                 break
+            if where and scanned >= MAX_SCAN:
+                capped = True
+                break
             start += page
+        self.last_search = {"scanned": scanned, "capped": capped}
         return out[:max_count]
+
+    def _attribute(self, ref: PointRef, name: str) -> str:
+        v = self._get(f"points/{ref.web_id}/attributes/{name}").get("Value")
+        return "" if v is None else str(v)
 
     def point(self, server: str, tag: str) -> PointRef:
         p = self._get("points", path=f"\\\\{server}\\{tag}", selectedFields="Name;WebId;Path")

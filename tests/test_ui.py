@@ -61,13 +61,18 @@ class FakePI:
         from pi_compression_tuner.demo import demo_data
         self.series, self.configs = demo_data(1)
         self.filters = []
+        self.wheres = []
 
-    def find_points(self, server, name_filter="*", max_count=1000):
+    def find_points(self, server, name_filter="*", max_count=1000, where=None):
         from fnmatch import fnmatch
 
-        from pi_compression_tuner.sources.base import PointRef
+        from pi_compression_tuner.demo import DEMO_INFO
+        from pi_compression_tuner.sources.base import PointFilter, PointRef
         self.filters.append(name_filter)
-        return [PointRef(t, descriptor=f"{t} description") for t in self.series if fnmatch(t, name_filter)][:max_count]
+        self.wheres.append(where)
+        refs = [PointRef(t, descriptor=DEMO_INFO[t]["descriptor"], engunits=DEMO_INFO[t]["engunits"])
+                for t in self.series if fnmatch(t, name_filter)]
+        return [r for r in refs if (where or PointFilter()).keeps(r)][:max_count]
 
     def point(self, server, tag):
         from pi_compression_tuner.sources.base import PointRef
@@ -195,3 +200,25 @@ def test_points_with_too_few_events_render(monkeypatch):
     for tag in ("DEMO.TEMP.PV", "DEMO.FLOW.PV"):
         at.selectbox(key="detail_tag").set_value(tag).run()
         assert not at.exception, at.exception
+
+
+def test_search_by_units_and_description(monkeypatch):
+    from pi_compression_tuner.settings import PISettings
+    from pi_compression_tuner.sources import connect as connect_mod
+    fake = FakePI()
+    monkeypatch.setattr(connect_mod, "connect", lambda *a, **k: connect_mod.Connection(fake, "webapi"))
+    _save_servers(PISettings(server="PISRV", url="https://pi/piwebapi"))
+    at = AppTest.from_file(APP, default_timeout=120)
+    at.run()
+    at.radio(key="origin").set_value("PI server").run()
+    at.text_input(key="pi_find_units").input("PSIG")
+    at.text_input(key="pi_find_source").input("OPC")
+    at.button(key="pi_search_go").click().run()
+    assert fake.filters == ["*"]  # no tag mask: every name, filtered on the rest
+    assert fake.wheres[-1].pointsource == "OPC"
+    assert list(at.session_state["pi_found"]) == ["DEMO.PRESS.PV"]
+    at.text_input(key="pi_find_units").input("")
+    at.text_input(key="pi_find_source").input("")
+    at.text_input(key="pi_find_desc").input("level")
+    at.button(key="pi_search_go").click().run()
+    assert list(at.session_state["pi_found"]) == ["DEMO.LEVEL.PV"]

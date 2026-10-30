@@ -89,15 +89,25 @@ def _pi_connection():
 def _search_filter(text: str) -> str:
     """A plain word searches anywhere in the name; text with * or ? is used as PI's own name filter."""
     text = text.strip()
+    if not text:
+        return "*"
     return text if any(c in text for c in "*?") else f"*{text}*"
+
+
+SEARCH_FIELDS = ("pi_search", "pi_find_source", "pi_find_units", "pi_find_desc")
 
 
 def _search_pi():
     conn = _pi_connection()
     limit = admin.app_settings().max_results
-    refs = conn.source.find_points(_pi_settings().server, _search_filter(ss.pi_search), max_count=limit)
+    from pi_compression_tuner.sources.base import PointFilter
+    where = PointFilter(pointsource=ss.get("pi_find_source", ""), engunits=ss.get("pi_find_units", ""),
+                        descriptor=ss.get("pi_find_desc", ""))
+    refs = conn.source.find_points(_pi_settings().server, _search_filter(ss.get("pi_search", "")), max_count=limit,
+                                   where=where)
     ss.pi_found = {r.name: r for r in refs}
     ss.pi_found_capped = len(refs) >= limit
+    ss.pi_scan_capped = bool(getattr(conn.source, "last_search", {}).get("capped"))
     ss.pi_picked = [t for t in ss.get("pi_picked", []) if t in ss.pi_found]
     ss.pi_table_v = ss.get("pi_table_v", 0) + 1
 
@@ -208,13 +218,21 @@ with st.sidebar:
 
         st.markdown("**Points**")
         with st.form("pi_search_form", border=False):
-            st.text_input("Search tag names", placeholder="FIC or FIC1*", key="pi_search",
-                          help="A word matches anywhere in the name. Use * and ? for PI's own name filter.")
+            st.text_input("Tag mask", placeholder="FIC or FIC1*", key="pi_search",
+                          help="A word matches anywhere in the name. Use * and ? for PI's own name filter. "
+                               "Leave empty for any name.")
+            st.text_input("Point source", placeholder="OPC or R*", key="pi_find_source",
+                          help="The interface's point source. * and ? are wildcards.")
+            c1, c2 = st.columns(2)
+            c1.text_input("Units", placeholder="degF", key="pi_find_units",
+                          help="Engineering units, exactly (any case), or with * and ? wildcards.")
+            c2.text_input("Description", placeholder="flow", key="pi_find_desc",
+                          help="Text anywhere in the description, or a pattern with * and ?.")
             search_clicked = st.form_submit_button("Search PI", key="pi_search_go", use_container_width=True,
                                                    disabled=not server)
         if search_clicked:
-            if not ss.pi_search.strip():
-                st.warning("Enter a search first.")
+            if not any(ss.get(k, "").strip() for k in SEARCH_FIELDS):
+                st.warning("Fill in at least one search field.")
             else:
                 try:
                     _search_pi()
@@ -223,6 +241,8 @@ with st.sidebar:
         found = ss.get("pi_found", {})
         if found:
             more = " (the search limit; see Admin)" if ss.get("pi_found_capped") else ""
+            if ss.get("pi_scan_capped"):
+                more += ". The search stopped after reading 100,000 names; add a tag mask to cover the rest"
             st.caption(f"{len(found)} found{more}. Tick the points to read in the table on the right.")
         with st.expander("Or paste tag names"):
             st.text_area("One per line", key="pi_tags", height=90, label_visibility="collapsed")

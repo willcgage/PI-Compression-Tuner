@@ -13,7 +13,7 @@ import time
 import pandas as pd
 
 from ..models import PointConfig, Series
-from .base import PointRef
+from .base import MAX_SCAN, PointFilter, PointRef
 from .piwebapi import config_from_attributes
 
 DEFAULT_ASSEMBLY_DIRS = (
@@ -113,7 +113,10 @@ class AFSDK:
     def check(self, server: str) -> None:
         self._server(server)
 
-    def find_points(self, server: str, name_filter: str = "*", max_count: int = 1000) -> list[PointRef]:
+    def find_points(self, server: str, name_filter: str = "*", max_count: int = 1000,
+                    where: PointFilter = PointFilter()) -> list[PointRef]:
+        """Points matching the name and point source (filtered by the server), then units and description
+        (checked here, reading up to :data:`MAX_SCAN` points)."""
         PIPoint = self.sdk["PI"].PIPoint
         names = ["descriptor", "engunits", "pointtype", "ptclassname"]
         load = None
@@ -121,11 +124,19 @@ class AFSDK:
             load = self.sdk["List"][self.sdk["System"].String]()
             for a in names:
                 load.Add(a)
-        out = []
-        for pt in PIPoint.FindPIPoints(self._server(server), name_filter, None, load):
-            out.append(self._ref(server, pt, *(str(pt.GetAttribute(a) or "") for a in names)))
-            if len(out) >= max_count:
+        source = where.pointsource.strip() or None
+        out, scanned, capped = [], 0, False
+        for pt in PIPoint.FindPIPoints(self._server(server), name_filter or "*", source, load):
+            scanned += 1
+            attrs = [str(pt.GetAttribute(a) or "") for a in names]
+            if where.keeps(PointRef(pt.Name, "", "", *attrs)):
+                out.append(self._ref(server, pt, *attrs))
+                if len(out) >= max_count:
+                    break
+            if where and scanned >= MAX_SCAN:
+                capped = True
                 break
+        self.last_search = {"scanned": scanned, "capped": capped}
         return out
 
     def point(self, server: str, tag: str) -> PointRef:
