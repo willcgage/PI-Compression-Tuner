@@ -164,6 +164,7 @@ pict pi triage --server PISRV --url https://pihost/piwebapi --filter "FIC*" --st
 
 # 2. Record the snapshot stream for the candidates (no point settings are changed)
 pict pi record --server PISRV --url https://pihost/piwebapi --filter "FIC*" --duration 2d --out capture
+# capture/data.csv is saved every poll; Ctrl+C once stops early and keeps it
 
 # 3. Analyze (or load capture/ into the UI)
 pict analyze capture/data.csv --config capture/config.csv --mode snapshot --server PISRV --out results

@@ -13,7 +13,7 @@ import time
 import pandas as pd
 
 from ..models import PointConfig, Series
-from .base import MAX_SCAN, PointFilter, PointRef
+from .base import MAX_SCAN, PointFilter, PointRef, join_series, wait_unless_stopped
 from .piwebapi import config_from_attributes
 
 DEFAULT_ASSEMBLY_DIRS = (
@@ -176,34 +176,49 @@ class AFSDK:
         v = res[Data.AFSummaryTypes.Count]
         return int(float(v.Value)) if v.IsGood else 0
 
-    def record_snapshots(self, refs: list[PointRef], duration_s: float, poll_s: float = 5.0, on_poll=None) -> dict[str, Series]:
-        """Record every snapshot event through a PIDataPipe (snapshot pipe). Point settings are not changed."""
+    def record_snapshots(self, refs: list[PointRef], duration_s: float, poll_s: float = 5.0, on_poll=None,
+                         on_batch=None, stop=None) -> dict[str, Series]:
+        """Record every snapshot event through a PIDataPipe (snapshot pipe). Point settings are not changed.
+
+        Each poll's events go to ``on_batch`` as Series, so a caller can save them as they arrive. ``stop`` is
+        checked between polls: the CLI sets it from Ctrl+C, because a KeyboardInterrupt raised while pythonnet is
+        inside a .NET call escapes as an unhandled CLR exception that kills the process before any ``except`` or
+        ``finally`` here runs, and everything held in memory is lost.
+        """
         PI, Data, List = self.sdk["PI"], self.sdk["Data"], self.sdk["List"]
         pipe = PI.PIDataPipe(Data.AFDataPipeType.Snapshot)
         pts = List[PI.PIPoint]()
         for r in refs:
             pts.Add(self._pt(r))
         pipe.AddSignups(pts)
-        events: dict[str, list] = {r.name: [] for r in refs}
+        parts: dict[str, list[Series]] = {r.name: [] for r in refs}
+        counts = {r.name: 0 for r in refs}
         deadline = time.monotonic() + duration_s
         batch = 10000
         try:
             while True:
+                new: dict[str, list] = {}
                 while True:  # drain the pipe: a full batch means more events are waiting
                     res = list(pipe.GetUpdateEvents(batch))
                     for ev in res:
                         if str(ev.Action) in ("Add", "Update"):
-                            events.setdefault(ev.Value.PIPoint.Name, []).append(ev.Value)
+                            new.setdefault(ev.Value.PIPoint.Name, []).append(ev.Value)
                     if len(res) < batch:
                         break
+                # Convert now rather than keep a day of .NET AFValue objects alive until the end.
+                got = {k: _series(v) for k, v in new.items()}
+                for k, s in got.items():
+                    parts.setdefault(k, []).append(s)
+                    counts[k] = counts.get(k, 0) + len(s)
+                if on_batch and got:
+                    on_batch(got)
                 if on_poll:
-                    on_poll({k: len(v) for k, v in events.items()})
-                if time.monotonic() >= deadline:
+                    on_poll(dict(counts))
+                if time.monotonic() >= deadline or wait_unless_stopped(min(poll_s, deadline - time.monotonic()), stop):
                     break
-                time.sleep(poll_s)
         except KeyboardInterrupt:
             pass
         finally:
             pipe.Close()  # removes the signups, as in AVEVA's AF SDK course (Exercise 5)
             pipe.Dispose()
-        return {k: _series(v) for k, v in events.items()}
+        return {k: join_series(v) for k, v in parts.items()}

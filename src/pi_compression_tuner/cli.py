@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import signal
 import sys
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
@@ -25,6 +28,34 @@ def _duration(text: str) -> float:
     if text and text[-1] in units:
         return float(text[:-1]) * units[text[-1]]
     return float(text)
+
+
+@contextmanager
+def _ctrl_c_stops():
+    """While recording, the first Ctrl+C asks the recorder to stop at its next check instead of raising.
+
+    A KeyboardInterrupt that lands while pythonnet is inside an AF SDK call does not reach Python: it
+    escapes as an unhandled Python.Runtime.PythonException and the process dies on the spot. A handler
+    that only sets a flag never raises, so there is nothing to escape. A second Ctrl+C raises as usual,
+    for a recorder that has stopped responding; what was saved so far stays on disk.
+    """
+    requested = []
+
+    def handler(signum, frame):
+        if requested:
+            raise KeyboardInterrupt
+        requested.append(True)
+        click.echo("\nStopping after this read. Press Ctrl+C again to quit at once.", err=True)
+
+    try:
+        previous = signal.signal(signal.SIGINT, handler)
+    except ValueError:  # not the main thread: leave Ctrl+C as it is
+        yield lambda: False
+        return
+    try:
+        yield lambda: bool(requested)
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 @click.group()
@@ -300,11 +331,27 @@ def record(server, source, url, auth, ca_bundle, insecure, afsdk_dir, tags, name
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     configs_frame(src, refs).to_csv(out / "config.csv", index=False)
-    click.echo(f"Recording {len(refs)} points for {duration}. Ctrl+C stops early and keeps what was recorded.", err=True)
-    series = src.record_snapshots(refs, _duration(duration), _duration(poll),
-                                  on_poll=lambda c: click.echo(f"\r  {sum(c.values())} events", nl=False, err=True))
-    series_frame(series).to_csv(out / "data.csv", index=False, date_format="%Y-%m-%dT%H:%M:%S.%fZ")
-    click.echo(f"\nWrote {out / 'data.csv'} and {out / 'config.csv'}.")
+    data_path = out / "data.csv"
+    click.echo(f"Recording {len(refs)} points for {duration} into {data_path}, saved every poll. "
+               "Ctrl+C stops early and keeps what was recorded.", err=True)
+    total = 0
+    # Each poll is appended and flushed as it arrives, so a crash, a closed window or a power cut
+    # loses one poll at most, not the whole recording.
+    with open(data_path, "w", newline="", encoding="utf-8") as f, _ctrl_c_stops() as stopping:
+        f.write("Tag,Timestamp,Value\n")
+
+        def save(batch):
+            nonlocal total
+            series_frame(batch).to_csv(f, header=False, index=False, date_format="%Y-%m-%dT%H:%M:%S.%fZ")
+            f.flush()
+            os.fsync(f.fileno())
+            total += sum(len(s) for s in batch.values())
+
+        try:
+            src.record_snapshots(refs, _duration(duration), _duration(poll), on_batch=save, stop=stopping,
+                                 on_poll=lambda c: click.echo(f"\r  {sum(c.values())} events", nl=False, err=True))
+        finally:
+            click.echo(f"\nSaved {total} events to {data_path}; settings are in {out / 'config.csv'}.", err=True)
 
 
 @pi.command()

@@ -15,7 +15,7 @@ import pandas as pd
 import requests
 
 from ..models import PointConfig, Series
-from .base import MAX_SCAN, PointFilter, PointRef, text_matches
+from .base import MAX_SCAN, PointFilter, PointRef, join_series, text_matches, wait_unless_stopped
 
 CONFIG_ATTRIBUTES = (
     "excdev", "excmin", "excmax", "compdev", "compmin", "compmax",
@@ -136,34 +136,43 @@ class PIWebAPI:
         return 0
 
     def record_snapshots(self, refs: list[PointRef], duration_s: float, poll_s: float = 5.0,
-                         on_poll=None) -> dict[str, Series]:
+                         on_poll=None, on_batch=None, stop=None) -> dict[str, Series]:
         """Record every snapshot event for the points over ``duration_s`` seconds.
 
         Uses PI Web API stream updates: one marker per point, polled every ``poll_s``.
         The snapshot stream is after exception and before compression, which is the
         signal compression should be tuned against. Nothing about the points is changed.
+        Each poll's events go to ``on_batch`` so a caller can save them as they arrive;
+        ``stop`` is checked between polls.
         """
         markers = {}
         for ref in refs:
             r = self.s.post(f"{self.base}/streams/{ref.web_id}/updates", timeout=self.timeout)
             r.raise_for_status()
             markers[ref.name] = r.json()["LatestMarker"]
-        events: dict[str, list] = {ref.name: [] for ref in refs}
+        parts: dict[str, list[Series]] = {ref.name: [] for ref in refs}
+        counts = {ref.name: 0 for ref in refs}
         deadline = time.monotonic() + duration_s
         try:
             while True:
+                got = {}
                 for name, marker in list(markers.items()):
                     body = self._get(f"streams/updates/{quote(marker, safe='')}")
-                    events[name].extend(e for e in body.get("Events", []) if e.get("Action", "Add") in ("Add", "Update"))
+                    items = [e for e in body.get("Events", []) if e.get("Action", "Add") in ("Add", "Update")]
                     markers[name] = body.get("LatestMarker", marker)
+                    if items:
+                        got[name] = series_from_items(items)
+                        parts[name].append(got[name])
+                        counts[name] += len(got[name])
+                if on_batch and got:
+                    on_batch(got)
                 if on_poll:
-                    on_poll({k: len(v) for k, v in events.items()})
-                if time.monotonic() >= deadline:
+                    on_poll(dict(counts))
+                if time.monotonic() >= deadline or wait_unless_stopped(min(poll_s, deadline - time.monotonic()), stop):
                     break
-                time.sleep(poll_s)
         except KeyboardInterrupt:
             pass  # stop early and keep what was recorded
-        return {name: series_from_items(items) for name, items in events.items()}
+        return {name: join_series(p) for name, p in parts.items()}
 
 
 def _use_system_trust() -> None:

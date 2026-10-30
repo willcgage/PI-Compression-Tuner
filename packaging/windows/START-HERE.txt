@@ -86,7 +86,10 @@ In the PI command prompt:
   c) The real test: record the snapshot stream for a few hours, then analyze it.
        pict pi record --filter "FIC*" --limit 20 --duration 4h --out capture
        pict analyze capture\data.csv --config capture\config.csv --mode snapshot --server PISRV --out results
-     Ctrl+C stops recording early and keeps what was recorded. Recording changes no
+     capture\data.csv is saved after every poll, so it holds everything recorded so
+     far even if the window is closed. Ctrl+C stops recording early: press it once
+     and wait for the "Saved ... events" line. Windows then asks
+     "Terminate batch job (Y/N)?": either answer is fine. Recording changes no
      point settings; through the PI Web API it registers a stream-updates marker.
 
 

@@ -27,7 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 HERE = Path(__file__).resolve().parent
-PYTHON_VERSION = "3.13.17"   # NuGet "python" package: the python.org Windows x64 build
+PYTHON_VERSION = "3.15.2"    # NuGet "python" package: the python.org Windows x64 build
 EXTRAS = ("ui", "kerberos", "afsdk")
 NUGET = "https://api.nuget.org/v3-flatcontainer/python/{v}/python.{v}.nupkg"
 

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from typing import Callable, Protocol
+
+import numpy as np
 
 from ..models import PointConfig, Series
 
@@ -67,4 +70,32 @@ class PISource(Protocol):
     def recorded(self, ref: PointRef, start: str, end: str) -> Series: ...
     def event_count(self, ref: PointRef, start: str, end: str) -> int: ...
     def record_snapshots(self, refs: list[PointRef], duration_s: float, poll_s: float = 5.0,
-                         on_poll: Callable[[dict], None] | None = None) -> dict[str, Series]: ...
+                         on_poll: Callable[[dict], None] | None = None,
+                         on_batch: Callable[[dict[str, Series]], None] | None = None,
+                         stop: Callable[[], bool] | None = None) -> dict[str, Series]: ...
+
+
+def wait_unless_stopped(seconds: float, stop: Callable[[], bool] | None) -> bool:
+    """Sleep up to ``seconds``, waking early once ``stop()`` is true. Returns whether to stop.
+
+    Short steps, so a Ctrl+C taken as a stop request ends a 10 s poll interval at once
+    rather than after it.
+    """
+    end = time.monotonic() + seconds
+    while True:
+        if stop and stop():
+            return True
+        left = end - time.monotonic()
+        if left <= 0:
+            return False
+        time.sleep(min(left, 0.2))
+
+
+def join_series(parts: list[Series]) -> Series:
+    """One Series from the batches a recording delivered, in order."""
+    parts = [p for p in parts if len(p)]
+    if not parts:
+        return Series([], [])
+    if len(parts) == 1:
+        return parts[0]
+    return Series(np.concatenate([p.t for p in parts]), np.concatenate([p.v for p in parts]))
