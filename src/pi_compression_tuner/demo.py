@@ -10,7 +10,10 @@ START = 1767225600.0  # 2026-01-01T00:00:00Z
 
 
 def demo_data(days: float = 3, seed: int = 1, step_s: float = 5.0) -> tuple[dict[str, Series], dict[str, PointConfig]]:
-    """Four points with different behavior and deliberately poor settings, sampled every ``step_s`` seconds."""
+    """Four points with different behavior and deliberately poor settings, sampled every ``step_s`` seconds.
+
+    The temperature carries three isolated spikes.
+    """
     rng = np.random.default_rng(seed)
     t = np.arange(0, days * 86400, step_s)
     n = len(t)
@@ -21,4 +24,8 @@ def demo_data(days: float = 3, seed: int = 1, step_s: float = 5.0) -> tuple[dict
         "DEMO.LEVEL.PV": (50 + 20 * np.sin(2 * np.pi * t / 5400) + rng.normal(0, 0.3, n),
                           PointConfig(compdev=0.5, span=100, compressing=False)),
     }
+    # A few one-sample spikes on the temperature, as a faulty transmitter might send.
+    temp = sigs["DEMO.TEMP.PV"][0]
+    for i in np.random.default_rng(seed + 1).choice(np.arange(1, n - 1), size=3, replace=False):
+        temp[i] += 4.0
     return ({k: Series(START + t, v) for k, (v, _) in sigs.items()}, {k: c for k, (_, c) in sigs.items()})

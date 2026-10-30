@@ -58,3 +58,14 @@ def test_point_detail_navigation_and_zoom():
     assert any("Archive events per day" in m.value for m in at.markdown)
     at.button_group(key=f"view_{tag}").set_value("Largest miss").run()
     assert not at.exception, at.exception
+
+
+def test_key_moments_suggest_and_retune():
+    at = _loaded_and_run()
+    at.selectbox(key="detail_tag").set_value("DEMO.LEVEL.PV").run()
+    at.button(key="km_suggest_DEMO.LEVEL.PV").click().run()
+    assert not at.exception, at.exception
+    assert any("key moments." in m.value and "Retune" in m.value for m in at.markdown)
+    at.button(key="km_retune_DEMO.LEVEL.PV").click().run()
+    assert not at.exception, at.exception
+    assert any("The proposal keeps all" in m.value for m in at.markdown)
