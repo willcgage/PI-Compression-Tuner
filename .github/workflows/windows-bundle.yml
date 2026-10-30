@@ -18,9 +18,9 @@ jobs:
   bundle:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.15"
 
@@ -75,7 +75,7 @@ jobs:
           if ($LASTEXITCODE -ne 1) { throw "a missing file went unnoticed" }
           exit 0
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: PI-Compression-Tuner-win64
           path: |
