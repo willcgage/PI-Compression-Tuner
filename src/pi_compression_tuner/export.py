@@ -32,7 +32,9 @@ def results_frame(results: list[TuneResult]) -> pd.DataFrame:
                 f"{prefix}CompDevPercent": ev.config.compdevpercent if ev else None,
                 f"{prefix}Retention": ev.score.retention if ev else None,
                 f"{prefix}MaxError": ev.score.max_error if ev else None,
+                f"{prefix}RMSError": ev.score.rms_error if ev else None,
                 f"{prefix}EventsPerDay": ev.events_per_day if ev else None,
+                f"{prefix}CompressionRatio": ev.compression_ratio if ev else None,
             })
         if cur and rec and cur.archived_events:
             row["EventChangePercent"] = 100.0 * (rec.archived_events - cur.archived_events) / cur.archived_events

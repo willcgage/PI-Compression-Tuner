@@ -43,7 +43,8 @@ def main():
 @click.option("--percentile", type=float, default=10.0, show_default=True, help="Window percentile used as the headline score.")
 @click.option("--max-error", type=float, help="Largest allowed error, engineering units.")
 @click.option("--max-error-pct-span", type=float, help="Largest allowed error, percent of span.")
-@click.option("--excdev-ratio", type=float, default=0.5, show_default=True, help="Raw mode: ExcDev = ratio x CompDev.")
+@click.option("--excdev-ratio", type=float,
+              help="Raw mode: fix ExcDev at ratio x CompDev. By default ratios from 0.1 to 1 are searched.")
 @click.option("--server", default="", help="Data Archive name to put in the PI Builder Parent column.")
 @click.option("--out", "out_dir", type=click.Path(file_okay=False), default="out", show_default=True)
 def analyze(data, config_path, mode, target, window, percentile, max_error, max_error_pct_span, excdev_ratio, server, out_dir):

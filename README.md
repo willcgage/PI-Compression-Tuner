@@ -11,8 +11,11 @@ This is the MVP: it **only makes recommendations**. Use it from the web UI (`pic
    - archived data for points whose compression is off or very tight (`pict pi fetch`);
    - or any CSV export.
 2. **Replay PI's data reduction** at candidate settings. The replay covers exception reporting (ExcDev, ExcMin, ExcMax, and the "previous value" rule) and swinging-door compression (CompDev, CompMin, CompMax). It then rebuilds the trend PI would draw, using linear interpolation, or held values for step points.
-3. **Score each candidate** for retention, maximum error, and archive events per day.
-4. **Propose** the loosest CompDev that still meets the target retention (default 95%) and any error limit. The value is rounded to two significant figures, but only when the rounded value still meets the target.
+3. **Score each candidate** for retention, maximum and RMS error, archive events per day, and compression ratio (input events per archived event).
+4. **Propose** the loosest CompDev that still meets the target retention (default 95%) and any error limit.
+   - The score is not always smooth in CompDev: a looser setting can pass again after tighter ones fail. The search stays in the first passing range and notes any passing setting beyond a gap.
+   - A refined value is kept only if a setting 10% tighter also passes, so the proposal never sits in a narrow passing pocket.
+   - The value is rounded to two significant figures, but only when the rounded value still meets the target.
 5. **Give each point a verdict:**
 
 | Verdict | Meaning | Ready to export? |
@@ -39,7 +42,12 @@ F   = min(10th percentile of F_w, whole-series F)  headline score
 - The low window percentile catches detail lost during a few busy hours, which a whole-series score hides behind slow drift.
 - Use `--max-error` (engineering units) or `--max-error-pct-span` to add a hard limit on the largest error.
 
-**In `snapshot` mode** the reference is the snapshot stream, which has already passed exception. Only CompDev is tuned in this mode. **In `raw` mode** both stages are replayed, and ExcDev is recommended as `--excdev-ratio` × CompDev (default 0.5).
+**In `snapshot` mode** the reference is the snapshot stream, which has already passed exception. Only CompDev is tuned in this mode.
+
+**In `raw` mode** both stages are replayed, and ExcDev is tuned together with CompDev:
+
+- ExcDev is tried at 0.1, 0.25, 0.5, 0.75 and 1 × CompDev. The ratio that meets the target with the fewest archive events wins. Use `--excdev-ratio` to fix one ratio instead.
+- ExcDev is never set below the measured noise σ (or above CompDev), so the interface does not pass noise. A note flags points whose current ExcDev is under half the noise.
 
 ## Install
 
@@ -66,7 +74,7 @@ pict ui          # opens http://localhost:8501
    - A plain-language finding, then now-versus-proposed archive volume, retention and largest error.
    - The point's settings with changed attributes highlighted, a signal profile, and the trend (whole period, or zoomed to the largest miss).
    - A trade-off curve shows what each CompDev costs in archive volume and buys in retention, with **Now**, **Proposal** and **Probe** marked.
-   - Set the probe to any CompDev (and ExcDev, in raw mode) to see its retention, events per day and largest error.
+   - Set the probe to any CompDev (and ExcDev, in raw mode) to see its retention, events per day, compression ratio, and largest and RMS error.
    - The trend's red strip shows where the proposed (or probe) archive strays from the input beyond the noise band.
    - Use the toggle to include or leave out the point from the PI Builder sheet, and **Previous**/**Next** to step through points.
    - Click **Adopt** to export the probe value instead of the proposal.
@@ -110,7 +118,7 @@ pict analyze capture/data.csv --config capture/config.csv --mode snapshot --serv
 ## Outputs
 
 - `report.html`: a summary, a table of every point linked to its own page, and one page per point in the same layout as the UI's Point detail tab: the finding, now-versus-proposed cards, the trend with a detail-lost strip and a zoom on the largest miss, the settings sheet and the signal profile. It works offline, follows the system's dark mode, and prints one point per page.
-- `results.csv`: current versus proposed settings, retention, maximum error, events per day, and notes.
+- `results.csv`: current versus proposed settings, retention, maximum and RMS error, events per day, compression ratio, and notes.
 - `pibuilder.csv`: one row per changed point, in PI Builder format. Rows that are ready to export are pre-selected with `x`. Review it in Excel, then publish with PI Builder.
 
 ## Input formats

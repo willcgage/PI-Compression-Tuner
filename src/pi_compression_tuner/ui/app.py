@@ -144,12 +144,15 @@ with st.sidebar:
     with st.expander("Error limits and ExcDev"):
         max_err = st.number_input("Largest error, engineering units", 0.0, value=0.0, key="max_err", help="0 = no limit")
         max_err_pct = st.number_input("Largest error, % of span", 0.0, 100.0, 0.0, key="max_err_pct", help="0 = no limit")
+        search_ratio = st.checkbox("Search ExcDev as 0.1 to 1 × CompDev", True, key="search_ratio",
+                                   disabled=mode != "raw",
+                                   help="Raw mode: try several ExcDev ratios and keep the one with the fewest events.")
         excdev_ratio = st.number_input("ExcDev as a fraction of CompDev", 0.0, 1.0, 0.5, 0.05, key="excdev_ratio",
-                                       disabled=mode != "raw")
+                                       disabled=mode != "raw" or search_ratio)
     run = st.button("Run tuning", type="primary", disabled=ss.series is None, key="run", use_container_width=True)
 
 opts = TuneOptions(target=target_pct / 100, input_mode=mode, window_s=WINDOWS[window], max_error=max_err or None,
-                   max_error_pct_span=max_err_pct or None, excdev_ratio=excdev_ratio)
+                   max_error_pct_span=max_err_pct or None, excdev_ratio=None if search_ratio else excdev_ratio)
 
 if run and ss.series is not None:
     results = []
@@ -344,7 +347,9 @@ with tab_point:
     if r.current is not None:
         st.markdown(style.section("Explore other settings"), unsafe_allow_html=True)
         if tag not in ss.curves:
-            ss.curves[tag] = tradeoff_curve(s, r.current.config, run_opts, noise=r.noise)
+            ref = (r.recommended or r.current).config
+            ss.curves[tag] = tradeoff_curve(s, r.current.config, run_opts, noise=r.noise,
+                                            excdev_ratio=ref.excdev / ref.compdev if ref.compdev > 0 else None)
         curve = ss.curves[tag]
         start_cd = float((r.recommended or r.current).config.compdev)
         left, right = st.columns([12, 7], gap="large")
@@ -375,12 +380,17 @@ with tab_point:
                         return f"<div>{ev.config.compdev:.4g}</div>"
                     if kind == "ev":
                         return f"<div>{_fmt_n(ev.events_per_day)}</div>"
+                    if kind == "cr":
+                        return f"<div>{present.fmt_ratio(ev.compression_ratio)}:1</div>"
+                    if kind == "rms":
+                        return f"<div>{ev.score.rms_error:.3g}</div>"
                     return f"<div>{ev.score.max_error:.3g}</div>"
 
                 grid = '<div class="h k"></div>' + "".join(f'<div class="h">{n}</div>' for n, _ in cols_cmp)
                 grid += "".join(f'<div class="k">{label}</div>' + "".join(cell(ev, k) for _, ev in cols_cmp)
                                 for label, k in (("CompDev", "cd"), ("Retained", "ret"),
-                                                 ("Events/day", "ev"), ("Max error", "err")))
+                                                 ("Events/day", "ev"), ("Compression", "cr"),
+                                                 ("Max error", "err"), ("RMS error", "rms")))
                 st.markdown(f'<div class="pct-compare n{len(cols_cmp)}">{grid}</div>', unsafe_allow_html=True)
                 st.write("")
                 b1, b2 = st.columns(2)
