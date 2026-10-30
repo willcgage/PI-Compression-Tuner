@@ -10,15 +10,22 @@ START = 1767225600.0  # 2026-01-01T00:00:00Z
 
 
 def demo_data(days: float = 3, seed: int = 1, step_s: float = 5.0) -> tuple[dict[str, Series], dict[str, PointConfig]]:
-    """Four points with different behavior and deliberately poor settings, sampled every ``step_s`` seconds."""
+    """Four points with different behavior and deliberately poor settings, sampled every ``step_s`` seconds.
+
+    The temperature carries three isolated spikes and has alarm limits at 54 and 66.
+    """
     rng = np.random.default_rng(seed)
     t = np.arange(0, days * 86400, step_s)
     n = len(t)
     sigs = {
-        "DEMO.TEMP.PV": (60 + 8 * np.sin(2 * np.pi * t / 86400) + rng.normal(0, 0.05, n), PointConfig(compdev=0.05, span=200)),
+        "DEMO.TEMP.PV": (60 + 8 * np.sin(2 * np.pi * t / 86400) + rng.normal(0, 0.05, n), PointConfig(compdev=0.05, span=200, alarm_limits=(54.0, 66.0))),
         "DEMO.FLOW.PV": (120 + np.cumsum(rng.normal(0, 0.4, n)) * 0.05 + rng.normal(0, 1.0, n), PointConfig(compdev=0.2, span=300)),
         "DEMO.PRESS.PV": (np.where((t // 7200) % 2 == 0, 10.0, 14.0) + rng.normal(0, 0.02, n), PointConfig(compdev=2.0, span=25)),
         "DEMO.LEVEL.PV": (50 + 20 * np.sin(2 * np.pi * t / 5400) + rng.normal(0, 0.3, n),
                           PointConfig(compdev=0.5, span=100, compressing=False)),
     }
+    # A few one-sample spikes on the temperature, as a faulty transmitter might send.
+    temp = sigs["DEMO.TEMP.PV"][0]
+    for i in np.random.default_rng(seed + 1).choice(np.arange(1, n - 1), size=3, replace=False):
+        temp[i] += 4.0
     return ({k: Series(START + t, v) for k, (v, _) in sigs.items()}, {k: c for k, (_, c) in sigs.items()})

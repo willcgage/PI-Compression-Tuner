@@ -14,6 +14,10 @@ class PointConfig:
 
     Deviations are in engineering units. Times are in seconds.
     Defaults match the PI Data Archive defaults for a new float point.
+
+    ``alarm_limits`` are not PI Point attributes: they are the point's alarm thresholds
+    (Lo, Hi, LoLo, HiHi, in any order) from wherever the site keeps them, used only to
+    suggest key moments where the signal crosses one.
     """
 
     excdev: float = 0.0
@@ -26,6 +30,7 @@ class PointConfig:
     step: bool = False
     zero: float = 0.0
     span: float = 100.0
+    alarm_limits: tuple = ()
 
     @classmethod
     def from_percent(cls, excdevpercent: float, compdevpercent: float, span: float = 100.0, **kw) -> "PointConfig":

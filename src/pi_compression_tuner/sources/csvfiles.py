@@ -8,8 +8,10 @@ regard to case.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from ..models import PointConfig, Series
@@ -17,6 +19,7 @@ from ..models import PointConfig, Series
 _TAG_COLS = ("tag", "name", "tagname", "pipoint", "point")
 _TIME_COLS = ("timestamp", "time", "datetime", "date")
 _VALUE_COLS = ("value", "val")
+_LIMIT_COLS = ("alarmlimits", "lolo", "lo", "hi", "hihi", "alarmlow", "alarmhigh", "lowalarm", "highalarm")
 
 
 def _find(cols: dict[str, str], names: tuple[str, ...]) -> str | None:
@@ -54,6 +57,8 @@ def read_configs(path: str | Path) -> dict[str, PointConfig]:
     """Read point settings. Missing attributes take PI defaults.
 
     ExcDevPercent and CompDevPercent are used only where ExcDev and CompDev are absent.
+    Alarm limits come from LoLo, Lo, Hi and HiHi columns, or from one AlarmLimits column
+    holding several values separated by semicolons.
     """
     df = pd.read_csv(path)
     cols = {c.strip().lower(): c for c in df.columns}
@@ -68,6 +73,19 @@ def read_configs(path: str | Path) -> dict[str, PointConfig]:
         if c is None or pd.isna(row[c]):
             return default
         return float(row[c])
+
+    def limits(row) -> tuple:
+        vals = []
+        for name in _LIMIT_COLS:
+            c = cols.get(name)
+            if c is None or pd.isna(row[c]):
+                continue
+            for part in re.split(r"[;,\s]+", str(row[c]).strip()):
+                try:
+                    vals.append(float(part))
+                except ValueError:
+                    pass
+        return tuple(sorted({v for v in vals if np.isfinite(v)}))
 
     for _, row in df.iterrows():
         span = num(row, "span", defaults.span)
@@ -90,5 +108,6 @@ def read_configs(path: str | Path) -> dict[str, PointConfig]:
             step=_as_bool(row[cols["step"]]) if "step" in cols else defaults.step,
             zero=num(row, "zero", defaults.zero),
             span=span,
+            alarm_limits=limits(row),
         )
     return out

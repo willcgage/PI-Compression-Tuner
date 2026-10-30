@@ -153,3 +153,29 @@ def test_points_with_too_few_events_render(monkeypatch):
     for tag in ("DEMO.TEMP.PV", "DEMO.FLOW.PV"):
         at.selectbox(key="detail_tag").set_value(tag).run()
         assert not at.exception, at.exception
+
+
+def test_key_moments_suggest_and_retune():
+    at = _loaded_and_run()
+    at.selectbox(key="detail_tag").set_value("DEMO.LEVEL.PV").run()
+    at.button(key="km_suggest_DEMO.LEVEL.PV").click().run()
+    assert not at.exception, at.exception
+    assert any("key moments." in m.value and "Retune" in m.value for m in at.markdown)
+    at.button(key="km_retune_DEMO.LEVEL.PV").click().run()
+    assert not at.exception, at.exception
+    assert any("The proposal keeps all" in m.value for m in at.markdown)
+
+
+def test_alarm_limits_feed_suggest():
+    at = _loaded_and_run()
+    at.selectbox(key="detail_tag").set_value("DEMO.TEMP.PV").run()
+    lim = [w for w in at.text_input if w.key.startswith("lim_DEMO.TEMP.PV")][0]
+    assert lim.value == "54, 66"
+    at.button(key="km_suggest_DEMO.TEMP.PV").click().run()
+    assert not at.exception, at.exception
+    picked = [m for m in at.multiselect if m.key.startswith("km_DEMO.TEMP.PV")][0]
+    from pi_compression_tuner.moments import alarm_crossings
+    from pi_compression_tuner.metrics import estimate_noise
+    series = at.session_state.series["DEMO.TEMP.PV"]
+    crossings = alarm_crossings(series, (54.0, 66.0), estimate_noise(series.v))
+    assert len(crossings) and set(crossings.tolist()) <= set(picked.value)
