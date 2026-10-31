@@ -22,6 +22,7 @@ class Classification(str, Enum):
     STORING_NOISE = "Storing noise"
     LOSING_DETAIL = "Losing detail"
     LITTLE_TO_GAIN = "Little to gain"
+    EXCDEV_TOO_WIDE = "ExcDev too wide"
     RANGE_MISMATCH = "Range mismatch"
     NOT_MOVING = "Not moving"
     TOO_FEW_EVENTS = "Too few events"
@@ -104,13 +105,47 @@ class TuneResult:
     moments: tuple = ()  # key moment timestamps the result was tuned to keep
     spikes: int = 0      # isolated one-event spikes in the input
     moment_compdev: float | None = None  # CompDev the key moments alone imply (a sanity check)
+    # Settings suggested without a score: Zero/Span fitted to the data when there is no scored proposal to
+    # carry them, or a narrower ExcDev (with CompDev to match) when ExcDev hides the signal from the tuner.
+    suggested: PointConfig | None = None
 
     @property
     def changes(self) -> bool:
         if self.recommended is None or self.current is None:
             return False
         a, b = self.current.config, self.recommended.config
-        return not (math.isclose(a.compdev, b.compdev) and math.isclose(a.excdev, b.excdev) and a.compressing == b.compressing)
+        return not (math.isclose(a.compdev, b.compdev) and math.isclose(a.excdev, b.excdev) and a.compressing == b.compressing
+                    and math.isclose(a.zero, b.zero) and math.isclose(a.span, b.span))
+
+
+_NICE = (1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10)
+
+
+def _nice_ceil(x: float) -> float:
+    """The smallest round number (1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6 or 8 times a power of ten) at or above ``x``."""
+    if x <= 0 or not math.isfinite(x):
+        return 0.0
+    p = 10.0 ** math.floor(math.log10(x))
+    return next(round(m * p, 12) for m in _NICE if m * p >= x * (1 - 1e-12))
+
+
+def suggest_zero_span(lo: float, hi: float, headroom: float = 0.1) -> tuple[float, float]:
+    """A round Zero and Span that hold the observed values ``lo`` to ``hi`` with some headroom.
+
+    Zero stays at 0 for signals that never go negative, as most transmitter ranges start there.
+    The instrument's calibrated range is the better source: this only covers what was seen.
+    """
+    top = _nice_ceil(hi * (1 + headroom)) if hi > 0 else 0.0
+    zero = -_nice_ceil(-lo * (1 + headroom)) if lo < 0 else 0.0
+    if top == zero:  # a flat signal at 0
+        top = zero + 1.0
+    return zero, top - zero
+
+
+def suggest_excdev(noise: float, observed_range: float) -> float:
+    """A narrower ExcDev for a signal whose movement the current ExcDev throws away: about the noise,
+    or 1% of the observed range if that is larger, rounded down."""
+    return _floor_sig(max(noise, 0.01 * observed_range), 2)
 
 
 def _floor_sig(x: float, sig: int = 2) -> float:
@@ -327,8 +362,28 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
             notes.append(f"{outside:.0%} of values fall outside Zero/Span ({current.zero:g} to {current.zero + current.span:g}).")
     if zero_span_issue and current.span <= 0:
         notes.append("Span is zero or negative, so percent settings are meaningless.")
+    new_range = None
+    if zero_span_issue:
+        new_range = suggest_zero_span(float(series.v.min()), float(series.v.max()))
+        notes.append(f"Suggested Zero {new_range[0]:g} and Span {new_range[1]:g} (range {new_range[0]:g} to "
+                     f"{new_range[0] + new_range[1]:g}) hold every observed value. Check them against the "
+                     "instrument's calibrated range before publishing.")
 
-    if recommended is None:
+    # In snapshot mode CompDev is never tried below ExcDev. When nothing passes and the noise is under
+    # ExcDev, the interface's exception setting is what loses the detail, not compression.
+    excdev_wide = (recommended is None and opts.input_mode == "snapshot" and current.excdev > noise
+                   and not feasible(current_eval))
+    suggested = None
+
+    if excdev_wide:
+        cls = Classification.EXCDEV_TOO_WIDE
+        exc = suggest_excdev(noise, float(np.ptp(series.v)))
+        suggested = replace(current, excdev=exc, compdev=2 * exc, compressing=True)
+        notes.append(f"The signal moves {float(np.ptp(series.v)):.3g} in total with noise {noise:.3g}, and ExcDev "
+                     f"{current.excdev:g} is {current.excdev / noise:.0f}× the noise. Suggested: ExcDev {exc:g} and "
+                     f"CompDev {2 * exc:g}. Let it run for a day, then record and tune again: with the finer snapshot "
+                     "stream the tuner can set CompDev properly.")
+    elif recommended is None:
         cls = Classification.LITTLE_TO_GAIN
         notes.append(f"No tested setting reaches {opts.target:.0%} retention"
                      + ("" if math.isinf(limit) else f" within the {limit:g} error limit")
@@ -387,6 +442,12 @@ def tune_point(tag: str, series: Series, current: PointConfig, opts: TuneOptions
         notes.append(f"The largest error is at an isolated spike ({when} UTC). Check whether it is a real event "
                      "or an instrument fault; mark it as a key moment to keep it.")
 
+    if new_range is not None:
+        if recommended is not None:
+            recommended = replace(recommended, config=replace(recommended.config, zero=new_range[0], span=new_range[1]))
+        else:
+            suggested = replace(suggested or current, zero=new_range[0], span=new_range[1])
+
     safe = cls in (Classification.STORING_NOISE, Classification.LOSING_DETAIL)
     return TuneResult(tag, cls, current_eval, recommended, noise, n, safe, notes,
-                      moments=moments, spikes=len(spikes), moment_compdev=moment_compdev)
+                      moments=moments, spikes=len(spikes), moment_compdev=moment_compdev, suggested=suggested)

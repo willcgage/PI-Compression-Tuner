@@ -6,6 +6,7 @@ This tool never writes settings to PI.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -48,12 +49,16 @@ def results_frame(results: list[TuneResult]) -> pd.DataFrame:
         row["Template"] = r.template
         row.update({"TemplateExcDev": b.excdev if b else None, "TemplateCompDev": b.compdev if b else None,
                     "TemplateCompMax": b.compmax if b else None, "TemplateExcMax": b.excmax if b else None})
+        sg = r.suggested
+        row.update({"SuggestedExcDev": sg.excdev if sg else None, "SuggestedCompDev": sg.compdev if sg else None})
+        shown = rec.config if (rec and r.changes) else sg
+        row.update({"ProposedZero": shown.zero if shown else None, "ProposedSpan": shown.span if shown else None})
         row["Notes"] = " ".join(r.notes)
         rows.append(row)
     df = pd.DataFrame(rows)
     # Points without settings (too few events, not moving) leave gaps: keep the columns numeric, with NaN.
-    numeric = [c for c in df.columns if c.startswith(("Current", "Recommended", "TemplateE", "TemplateC"))
-               or c == "EventChangePercent"]
+    numeric = [c for c in df.columns if c.startswith(("Current", "Recommended", "TemplateE", "TemplateC",
+                                                         "Suggested", "Proposed")) or c == "EventChangePercent"]
     df[numeric] = df[numeric].apply(pd.to_numeric, errors="coerce").astype(float)
     return df
 
@@ -64,26 +69,44 @@ def write_results_csv(results: list[TuneResult], path: str | Path) -> None:
 
 def pibuilder_frame(results: list[TuneResult], server: str = "", include_excdev: bool = False,
                     selected: set[str] | None = None) -> pd.DataFrame:
-    """PI Builder rows for every point whose recommendation changes its settings.
+    """PI Builder rows for every point whose recommendation changes its settings, plus unscored suggestions
+    (a narrower ExcDev, or Zero/Span for a point without a proposal).
 
     A row is marked ``x`` (selected for publishing) when its tag is in ``selected``,
     or, when ``selected`` is None, when it is safe to bulk apply. Unselected rows stay
     in the sheet so they can be reviewed one at a time.
+
+    When any row changes Zero or Span, every row carries Zero, Span and the deviations as percent
+    of the new span (CompDevPercent, ExcDevPercent). PI keeps the percent when Span changes, so
+    the sheet gives the same result whichever column PI Builder applies first.
     """
-    rows = []
+    picked = []
     for r in results:
-        if not r.changes:
+        if r.changes:
+            cfg = r.recommended.config
+        elif r.suggested is not None:
+            cfg = r.suggested
+        else:
             continue
-        cfg = r.recommended.config
-        pick = (r.tag in selected) if selected is not None else r.ready_to_export
+        pick = (r.tag in selected) if selected is not None else (r.ready_to_export and r.changes)
+        picked.append((r, cfg, pick))
+    ranged = any(not (math.isclose(cfg.zero, r.current.config.zero) and math.isclose(cfg.span, r.current.config.span))
+                 for r, cfg, _ in picked)
+    with_exc = include_excdev or any(not math.isclose(cfg.excdev, r.current.config.excdev) for r, cfg, _ in picked)
+    exc_col, comp_col = ("ExcDevPercent", "CompDevPercent") if ranged else ("ExcDev", "CompDev")
+    rows = []
+    for r, cfg, pick in picked:
         row = {"Selected(x)": "x" if pick else "", "Parent": server, "Name": r.tag, "ObjectType": "PIPoint"}
-        if include_excdev:
-            row["ExcDev"] = cfg.excdev
-        row["CompDev"] = cfg.compdev
+        if ranged:
+            row["Zero"], row["Span"] = cfg.zero, cfg.span
+        if with_exc:
+            row[exc_col] = cfg.excdevpercent if ranged else cfg.excdev
+        row[comp_col] = cfg.compdevpercent if ranged else cfg.compdev
         if not r.current.config.compressing:
             row["Compressing"] = 1
         rows.append(row)
-    cols = ["Selected(x)", "Parent", "Name", "ObjectType"] + (["ExcDev"] if include_excdev else []) + ["CompDev", "Compressing"]
+    cols = (["Selected(x)", "Parent", "Name", "ObjectType"] + (["Zero", "Span"] if ranged else [])
+            + ([exc_col] if with_exc else []) + [comp_col, "Compressing"])
     df = pd.DataFrame(rows, columns=cols)
     if df["Compressing"].isna().all():
         df = df.drop(columns="Compressing")

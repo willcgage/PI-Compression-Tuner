@@ -28,6 +28,7 @@ _VERDICT_CLASS = {
     Classification.STORING_NOISE: "v-noise",
     Classification.LOSING_DETAIL: "v-loss",
     Classification.LITTLE_TO_GAIN: "v-info",
+    Classification.EXCDEV_TOO_WIDE: "v-loss",
     Classification.RANGE_MISMATCH: "v-info",
     Classification.NOT_MOVING: "v-none",
     Classification.TOO_FEW_EVENTS: "v-none",
@@ -324,10 +325,11 @@ def _point_section(r: TuneResult, s: Series, opts: TuneOptions, selected: bool) 
                  f'<figure><figcaption>Largest miss · {opts.window_s / 60:g} min around the biggest error</figcaption>'
                  f'{zchart}</figure></div>')
 
+    shown = present.shown_config(r)
     side = (f'<div><div class="subh">Signal</div>{present.profile(present.signal_profile(r, s, cfg))}'
             f'{present.notes([n for n in r.notes if html.escape(n) not in finding])}</div>')
     parts.append(f'<div class="two"><div><div class="subh">Settings</div>'
-                 f'{present.attrs_table(present.attr_rows(cfg, prop.config if prop else None), proposed=prop is not None)}'
+                 f'{present.attrs_table(present.attr_rows(cfg, shown), proposed=shown is not None)}'
                  f'</div>{side}</div>')
     return f'<section class="point" id="{_anchor(r.tag)}">{"".join(parts)}{back}</section>'
 

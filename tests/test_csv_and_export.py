@@ -57,3 +57,27 @@ def test_results_frame_stays_numeric_when_no_point_has_settings():
                         tune_point("B", Series([], []), PointConfig(), TuneOptions())])
     assert df["CurrentEventsPerDay"].dtype == float and df["CurrentEventsPerDay"].isna().all()
     df["CurrentEventsPerDay"].round()  # what the UI does; raised TypeError on None before
+
+
+def test_pibuilder_sheet_carries_zero_span_and_excdev_suggestions():
+    import numpy as np
+
+    from pi_compression_tuner.export import pibuilder_frame, results_frame
+
+    rng = np.random.default_rng(0)
+    t = np.arange(0.0, 86400, 6.0)
+    wide = tune_point("E", Series(t, 14 + 0.25 * np.sin(2 * np.pi * t / 7200) + rng.normal(0, 0.005, len(t))),
+                      PointConfig(excdev=0.1, compdev=0.2, span=100))
+    ranged = tune_point("P", Series(t, 1060 + 20 * np.sin(2 * np.pi * t / 7200) + rng.normal(0, 0.5, len(t))),
+                        PointConfig(excdev=0.1, compdev=0.2, span=100))
+    noisy = tune_point("A", Series(t, 50 + 10 * np.sin(t / 3000)), PointConfig(compdev=0.0001, span=100))
+    b = pibuilder_frame([wide, ranged, noisy]).set_index("Name")
+    assert list(b.columns) == ["Selected(x)", "Parent", "ObjectType", "Zero", "Span", "ExcDevPercent", "CompDevPercent"]
+    # Percent of the new span, so the result does not depend on which column PI Builder applies first.
+    assert b.loc["P", "Span"] == 1200 and np.isclose(b.loc["P", "CompDevPercent"], ranged.recommended.config.compdev / 12)
+    assert b.loc["E", "Selected(x)"] == "" and np.isclose(b.loc["E", "ExcDevPercent"], wide.suggested.excdev)
+    assert b.loc["A", "Selected(x)"] == "x" and b.loc["A", "Span"] == 100
+    # Without a range change or ExcDev suggestion the sheet keeps its plain columns.
+    assert list(pibuilder_frame([noisy]).columns) == ["Selected(x)", "Parent", "Name", "ObjectType", "CompDev"]
+    rf = results_frame([wide, ranged]).set_index("Tag")
+    assert rf.loc["E", "SuggestedExcDev"] == wide.suggested.excdev and rf.loc["P", "ProposedSpan"] == 1200

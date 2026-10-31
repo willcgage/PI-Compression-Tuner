@@ -36,6 +36,16 @@ def proposal(r: TuneResult):
     return r.recommended if (r.recommended is not None and r.changes) else None
 
 
+def shown_config(r: TuneResult) -> PointConfig | None:
+    """Settings for the Proposed column: the scored proposal, else any unscored suggestion."""
+    prop = proposal(r)
+    return prop.config if prop is not None else r.suggested
+
+
+def _range_text(cfg: PointConfig) -> str:
+    return f"Zero <b>{cfg.zero:g}</b> and Span <b>{cfg.span:g}</b>"
+
+
 def attr_rows(now: PointConfig, new: PointConfig | None) -> list[tuple]:
     """Point attributes, now against proposed: (name, now, new, changed, secondary)."""
     rows = []
@@ -106,14 +116,25 @@ def finding(r: TuneResult, target: float, adopted: bool = False) -> str:
         Classification.ON_TARGET: f"<b>On target.</b> Current settings keep {cur.score.retention:.1%} of the signal's "
                                   f"movement with {now}. No change is proposed.",
         Classification.LITTLE_TO_GAIN: "<b>Little to gain.</b> ",
-        Classification.RANGE_MISMATCH: "<b>Range mismatch.</b> Check Zero and Span before changing compression. ",
+        Classification.RANGE_MISMATCH: "<b>Range mismatch.</b> Values run outside Zero and Span"
+                                       + (f", so the proposal also sets {_range_text(prop.config)}. Check them against "
+                                          "the instrument's calibrated range. " if prop is not None else ". "),
+        Classification.EXCDEV_TOO_WIDE: f"<b>ExcDev too wide.</b> ExcDev {fmt_num(cur.config.excdev)} throws away this "
+                                        f"signal's movement before compression sees it, so today's archive keeps "
+                                        f"{cur.score.retention:.1%} and no CompDev can fix that. ",
     }.get(c, f"<b>{html.escape(c.value)}.</b> ")
     if c == Classification.ON_TARGET and not adopted:
         return lead
     if c == Classification.LITTLE_TO_GAIN and r.notes:
         lead += html.escape(r.notes[0]) + " "
+    if c == Classification.EXCDEV_TOO_WIDE and r.suggested is not None:
+        sg = r.suggested
+        return lead + (f"Try ExcDev <b>{fmt_num(sg.excdev)}</b> and CompDev <b>{fmt_num(sg.compdev)}</b>, let it run "
+                       "for a day, then record and tune again. Listed in the PI Builder sheet, not selected.")
     if prop is None:
-        return lead + "Not exported by default; review the trend before changing anything."
+        extra = (f" Suggested {_range_text(r.suggested)} hold every observed value." if r.suggested is not None
+                 and c != Classification.EXCDEV_TOO_WIDE else "")
+        return lead + "Not exported by default; review the trend before changing anything." + extra
     return lead + ("The adopted probe value: " if adopted else "") + how
 
 

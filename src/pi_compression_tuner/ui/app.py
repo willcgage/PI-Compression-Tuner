@@ -367,7 +367,12 @@ run_opts: TuneOptions = ss.get("opts", opts)
 def effective(r):
     """The result with an adopted probe setting in place of the proposal."""
     a = ss.adopted.get(r.tag)
-    return dataclasses.replace(r, recommended=a, notes=r.notes + ["CompDev adopted from the probe."]) if a else r
+    if not a:
+        return r
+    if r.recommended is not None:  # keep any Zero/Span fix the proposal carries
+        a = dataclasses.replace(a, config=dataclasses.replace(a.config, zero=r.recommended.config.zero,
+                                                              span=r.recommended.config.span))
+    return dataclasses.replace(r, recommended=a, notes=r.notes + ["CompDev adopted from the probe."])
 
 
 results = [effective(r) for r in ss.results]
@@ -522,8 +527,9 @@ with tab_point:
     a1, a2 = st.columns([3, 2], gap="large")
     with a1:
         st.markdown(style.section("Settings"), unsafe_allow_html=True)
-        st.markdown(style.attrs_table(present.attr_rows(cfg_now, prop.config if prop else None),
-                                      proposed=prop is not None), unsafe_allow_html=True)
+        shown = present.shown_config(r)
+        st.markdown(style.attrs_table(present.attr_rows(cfg_now, shown), proposed=shown is not None),
+                    unsafe_allow_html=True)
     with a2:
         st.markdown(style.section("Signal"), unsafe_allow_html=True)
         items = present.signal_profile(r, s, cfg_now)
