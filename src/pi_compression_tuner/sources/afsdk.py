@@ -144,11 +144,23 @@ class AFSDK:
         return self._ref(server, self.sdk["PI"].PIPoint.FindPIPoint(self._server(server), tag))
 
     def attributes(self, ref: PointRef) -> dict:
+        """The point's settings. An attribute the point's class doesn't have (instrumenttag is not on every class)
+        comes back as None: LoadAttributes skips unknown names and GetAttribute then raises KeyNotFoundException."""
         pt = self._pt(ref)
-        pt.LoadAttributes(list(_ATTRS))
+        try:
+            pt.LoadAttributes(list(_ATTRS))
+        except Exception:
+            for a in _ATTRS:  # load one at a time so one bad name doesn't stop the rest
+                try:
+                    pt.LoadAttributes([a])
+                except Exception:
+                    pass
         out = {}
         for a in _ATTRS:
-            v = pt.GetAttribute(a)
+            try:
+                v = pt.GetAttribute(a)
+            except Exception:
+                v = None
             out[a] = v if v is None or isinstance(v, (bool, int, float, str)) else str(v)
         return out
 

@@ -200,3 +200,33 @@ def test_snapshot_pipe_hands_each_poll_over_and_stops_when_asked():
     assert batches == [[1.0, 2.0, 3.0], [4.0, 5.0]]
     assert out["TAG1"].v.tolist() == [1.0, 2.0, 3.0, 4.0, 5.0]
     assert closed == ["close", "dispose"]
+
+
+def test_attributes_missing_from_the_point_class_come_back_blank():
+    class KeyNotFound(Exception):
+        pass
+
+    class BasePoint(FakePoint):
+        def GetAttribute(self, name):
+            if name == "instrumenttag":
+                raise KeyNotFound("The PI Point attribute 'instrumenttag' was not found.")
+            return super().GetAttribute(name)
+
+    sdk = AFSDK(sdk=_sdk(BasePoint([])))
+    ref = sdk.point("SRV", "TAG1")
+    a = sdk.attributes(ref)
+    assert a["instrumenttag"] is None and a["compdev"] == 0.5
+    assert sdk.config(ref).compdev == 0.5
+
+
+def test_attributes_load_one_by_one_when_the_bulk_load_fails():
+    class Picky(FakePoint):
+        def LoadAttributes(self, names):
+            if len(names) > 1:
+                raise ValueError("bad name in list")
+            self.loaded = (self.loaded or []) + list(names)
+
+    pt = Picky([])
+    sdk = AFSDK(sdk=_sdk(pt))
+    assert sdk.attributes(sdk.point("SRV", "TAG1"))["excdev"] == 0.25
+    assert "instrumenttag" in pt.loaded and len(pt.loaded) > 1
