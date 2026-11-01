@@ -34,7 +34,7 @@ from pi_compression_tuner.simulate import simulate_archive
 from pi_compression_tuner.sources.csvfiles import read_configs, read_point_info, read_series
 from pi_compression_tuner.templates import match, point_info, tune_with_template
 from pi_compression_tuner.tune import Classification, TuneOptions, evaluate_config, tradeoff_curve
-from pi_compression_tuner.ui import admin, duplicates, style
+from pi_compression_tuner.ui import admin, duplicates, identity, style
 from pi_compression_tuner.ui.style import INK, VERDICT_COLOR
 
 WINDOWS = {"15 min": 900, "30 min": 1800, "1 h": 3600, "4 h": 14400}
@@ -47,6 +47,13 @@ ss = st.session_state
 for k, v in {"series": None, "configs": {}, "infos": {}, "results": None, "adopted": {}, "source_note": "",
              "export_choice": {}, "table_v": 0, "curves": {}, "view": "tuner", "moments": {}, "km_v": 0}.items():
     ss.setdefault(k, v)
+
+me = identity.viewer()
+if me is None:
+    st.error("You are not signed in. Reload the page to sign in with your Windows account.")
+    st.stop()
+if ss.view == "admin" and not me.is_admin:
+    ss.view = "tuner"
 
 
 def _reset_results():
@@ -177,12 +184,15 @@ def _go(view):
 with st.sidebar:
     st.markdown('<div class="pct-brand"><b>PI Compression Tuner</b><span>Read-only · recommendations</span></div>',
                 unsafe_allow_html=True)
+    if me.shared:
+        st.caption(f"Signed in as **{me.user}**" + (" · admin" if me.is_admin else ""))
     if ss.view == "admin":
         st.button("← Back to the tuner", key="admin_back", use_container_width=True, on_click=_go, args=("tuner",))
-        st.caption("Admin settings: PI servers, the search limit and point templates.")
+        st.caption("Admin settings: PI servers, the search limit and point templates"
+                   + (", who may sign in, and recent activity." if me.shared else "."))
 
 if ss.view == "admin":
-    admin.render()
+    admin.render(me)
     st.stop()
 
 with st.sidebar:
@@ -315,8 +325,9 @@ with st.sidebar:
                                      "and any target or error limit the template sets.")
     run = st.button("Run tuning", type="primary", disabled=ss.series is None, key="run", use_container_width=True)
     st.divider()
-    st.button("Admin settings", key="admin_open", use_container_width=True, on_click=_go, args=("admin",),
-              help="PI servers, the search limit and point templates.")
+    if me.is_admin:
+        st.button("Admin settings", key="admin_open", use_container_width=True, on_click=_go, args=("admin",),
+                  help="PI servers, the search limit, point templates" + (" and who may sign in." if me.shared else "."))
 
 opts = TuneOptions(target=target_pct / 100, input_mode=mode, window_s=WINDOWS[window], max_error=max_err or None,
                    max_error_pct_span=max_err_pct or None, excdev_ratio=None if search_ratio else excdev_ratio)

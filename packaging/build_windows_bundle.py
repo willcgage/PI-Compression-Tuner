@@ -8,7 +8,8 @@ no installer and no admin rights. It runs on Linux or Windows:
     python packaging/build_windows_bundle.py            # writes dist/PI-Compression-Tuner-<version>-win64.zip
 
 Dependencies are resolved for Windows x64 by uv, so Windows-only packages
-(pythonnet for AF SDK, requests-negotiate-sspi for Kerberos sign-in) are included
+(pythonnet for AF SDK, requests-negotiate-sspi for Kerberos sign-in, pywin32 for
+the shared server's Windows sign-in) are included
 even when building on Linux.
 """
 
@@ -28,8 +29,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 HERE = Path(__file__).resolve().parent
 PYTHON_VERSION = "3.15.2"    # NuGet "python" package: the python.org Windows x64 build
-EXTRAS = ("ui", "kerberos", "afsdk")
+EXTRAS = ("ui", "server", "kerberos", "afsdk")
 NUGET = "https://api.nuget.org/v3-flatcontainer/python/{v}/python.{v}.nupkg"
+# WinSW (MIT), the host that runs `pict serve` as a Windows service. Pinned by version and checksum.
+WINSW_URL = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe"
+WINSW_SHA256 = "05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da"
 
 
 def run(*cmd: str | Path) -> None:
@@ -57,6 +61,23 @@ def fetch_python(cache: Path, dest: Path) -> None:
         raise SystemExit(f"python.exe missing from {pkg}")
 
 
+def fetch_winsw(cache: Path, dest: Path) -> None:
+    """The service host, as service/pict-service.exe, with its license."""
+    exe = cache / "WinSW-x64-2.12.0.exe"
+    if not exe.exists():
+        cache.mkdir(parents=True, exist_ok=True)
+        print(f"Downloading {WINSW_URL}", flush=True)
+        with urllib.request.urlopen(WINSW_URL) as r:
+            exe.write_bytes(r.read())
+    digest = hashlib.sha256(exe.read_bytes()).hexdigest()
+    if digest != WINSW_SHA256:
+        exe.unlink()
+        raise SystemExit(f"WinSW checksum mismatch: {digest}")
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copy(exe, dest / "pict-service.exe")
+    shutil.copy(HERE / "service" / "WinSW-LICENSE.txt", dest / "WinSW-LICENSE.txt")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, default=ROOT / "dist", help="Output folder (default: dist/).")
@@ -72,6 +93,7 @@ def main() -> None:
     py_major_minor = ".".join(PYTHON_VERSION.split(".")[:2])
 
     fetch_python(args.cache, bundle / "python")
+    fetch_winsw(args.cache, bundle / "service")
 
     # The tuner as a wheel, then its dependencies pinned for Windows x64.
     wheels = work / "wheels"

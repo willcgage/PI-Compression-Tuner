@@ -15,6 +15,10 @@ The settings live in a small TOML file, edited from the UI's Admin page or by ha
     ca_bundle = ""              # CA certificate (PEM) for the PI Web API, if not in the system store
     afsdk_dir = ""              # folder holding OSIsoft.AFSDK.dll, if not the standard one
 
+    [access]                    # who may use a shared server (pict serve); see access.py
+    admins = ["BUILTIN\\Administrators"]
+    users = ["CORP\\PI Engineers"]
+
     [[template]]
     name = "Temperature, °F"
     match_units = ["degF", "F"]
@@ -39,6 +43,7 @@ import tomllib
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from .access import AccessSettings
 from .templates import Template, starter_templates
 
 DEFAULT_MAX_RESULTS = 1000
@@ -71,6 +76,7 @@ class AppSettings:
     default_server: str = ""
     max_results: int = DEFAULT_MAX_RESULTS
     templates: list[Template] = field(default_factory=starter_templates)
+    access: AccessSettings = field(default_factory=AccessSettings)
 
     def server(self, label: str | None = None) -> PISettings:
         """The server with this label, else the default one, else the first, else empty settings."""
@@ -113,7 +119,8 @@ def load_app_settings(path: Path | None = None) -> AppSettings:
     servers = [_server_from(d) for d in data.get("server", [])]
     if not servers and data.get("pi", {}).get("server"):
         servers = [_server_from(data["pi"])]
-    out = AppSettings(servers=servers, default_server=str(data.get("default_server", "")))
+    out = AppSettings(servers=servers, default_server=str(data.get("default_server", "")),
+                      access=AccessSettings.from_dict(data.get("access", {})))
     try:
         out.max_results = min(max(int(data.get("max_results", DEFAULT_MAX_RESULTS)), 1), MAX_RESULTS_LIMIT)
     except (TypeError, ValueError):
@@ -150,6 +157,7 @@ def save_app_settings(settings: AppSettings, path: Path | None = None) -> Path:
              f"default_server = {_toml_value(settings.default_server)}",
              f"max_results = {int(settings.max_results)}",
              "templates_saved = true"]
+    lines += _table("[access]", settings.access.to_dict())
     for s in settings.servers:
         lines += _table("[[server]]", asdict(s))
     for t in settings.templates:
@@ -158,6 +166,15 @@ def save_app_settings(settings: AppSettings, path: Path | None = None) -> Path:
     tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
     tmp.replace(path)
     return path
+
+
+def settings_stamp(path: Path | None = None) -> tuple[int, int] | None:
+    """The settings file's modified time and size, to notice when someone else has saved it; None if there is no file."""
+    try:
+        st = (path or settings_path()).stat()
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size
 
 
 def load_settings(path: Path | None = None) -> PISettings:

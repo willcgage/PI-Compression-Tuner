@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 
+from pi_compression_tuner.access import AccessSettings, log_activity, read_activity, split_names
 from pi_compression_tuner.settings import (MAX_RESULTS_LIMIT, AppSettings, PISettings, load_app_settings,
-                                           save_app_settings, settings_path)
+                                           save_app_settings, settings_path, settings_stamp)
 from pi_compression_tuner.templates import Template, match, point_info, split_list, starter_templates
-from pi_compression_tuner.ui import style
+from pi_compression_tuner.ui import identity, style
 
 SOURCES = {"auto": "PI Web API, then AF SDK", "webapi": "PI Web API only", "afsdk": "AF SDK only"}
 AUTHS = ["kerberos", "basic", "anonymous"]
@@ -34,25 +37,49 @@ TEMPLATE_COLUMNS = [
 
 
 def app_settings() -> AppSettings:
-    """The saved admin settings, read once per session and again after each save."""
+    """The saved admin settings, read once per session and again whenever the file changes.
+
+    On a shared server another admin may save while this page is open. The tuner pages pick their changes up
+    on the next rerun; the Admin page keeps what it showed, so edits in progress are not lost, and says so.
+    """
     ss = st.session_state
+    stamp = settings_stamp()
+    if "admin" in ss and ss.get("admin_stamp") != stamp and ss.get("view") != "admin":
+        del ss["admin"]
     if "admin" not in ss:
         try:
             ss.admin = load_app_settings()
             ss.admin_error = ""
         except ValueError as e:
             ss.admin, ss.admin_error = AppSettings(), str(e)
+        ss.admin_stamp = stamp
+        ss.pop("pi_conn_key", None)   # reconnect in case the servers changed
     return ss.admin
 
 
-def _save(app: AppSettings) -> bool:
+def _changed_elsewhere() -> bool:
+    return st.session_state.get("admin_stamp") != settings_stamp()
+
+
+def _who() -> str:
+    me = identity.viewer()
+    return me.user if me else ""
+
+
+def _save(app: AppSettings, what: str = "settings") -> bool:
+    if _changed_elsewhere():
+        st.error("Someone else saved the settings after you opened this page, so yours were not saved. "
+                 "Press **Load the latest settings** at the top of the page, then make your change again.")
+        return False
     try:
         path = save_app_settings(app)
     except (OSError, ValueError) as e:
         st.error(f"Could not save the settings: {e}")
         return False
     st.session_state.admin = app
+    st.session_state.admin_stamp = settings_stamp()
     st.session_state.pop("pi_conn_key", None)  # reconnect with the new settings
+    log_activity(_who(), "settings saved", what)
     st.toast(f"Saved to {path}")
     return True
 
@@ -124,9 +151,8 @@ def _servers_section(app: AppSettings):
                            disabled=not labels)
     c2.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
     if c2.button("Save servers", type="primary", key="admin_save_servers", use_container_width=True, disabled=bool(error)):
-        new = AppSettings(servers=servers, default_server=default if labels else "", max_results=app.max_results,
-                          templates=app.templates)
-        if _save(new):
+        new = dataclasses.replace(app, servers=servers, default_server=default if labels else "")
+        if _save(new, f"PI servers ({len(servers)})"):
             _bump("admin_servers_v")
             st.rerun()
     c3.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
@@ -151,8 +177,8 @@ def _search_section(app: AppSettings):
                         help="PI Web API pages through results 1,000 at a time, so large searches take longer.")
     c2.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
     if c2.button("Save search limit", key="admin_save_search", disabled=int(n) == app.max_results):
-        new = AppSettings(servers=app.servers, default_server=app.default_server, max_results=int(n), templates=app.templates)
-        if _save(new):
+        new = dataclasses.replace(app, max_results=int(n))
+        if _save(new, f"search limit {int(n)}"):
             st.rerun()
 
 
@@ -246,8 +272,7 @@ def _templates_section(app: AppSettings):
         st.error(error)
     c1, c2, c3, _ = st.columns([1, 1, 1, 2])
     if c1.button("Save templates", type="primary", key="admin_save_templates", use_container_width=True, disabled=bool(error)):
-        if _save(AppSettings(servers=app.servers, default_server=app.default_server, max_results=app.max_results,
-                             templates=templates)):
+        if _save(dataclasses.replace(app, templates=templates), f"point templates ({len(templates)})"):
             _bump("admin_templates_v")
             st.rerun()
     if c2.button("Add missing starters", key="admin_add_starters", use_container_width=True,
@@ -256,8 +281,7 @@ def _templates_section(app: AppSettings):
         extra = [t for t in starter_templates() if t.name not in have]
         if not extra:
             st.info("Every starter template is already in the list.")
-        elif _save(AppSettings(servers=app.servers, default_server=app.default_server, max_results=app.max_results,
-                               templates=app.templates + extra)):
+        elif _save(dataclasses.replace(app, templates=app.templates + extra), f"added {len(extra)} starter templates"):
             _bump("admin_templates_v")
             st.rerun()
     if c3.button("Discard edits", key="admin_discard_templates", use_container_width=True):
@@ -281,12 +305,97 @@ def _templates_section(app: AppSettings):
         st.caption("Uses the table as edited, before saving.")
 
 
-def render():
+# --- access -------------------------------------------------------------------
+
+def would_lock_out(me: identity.Viewer, access: AccessSettings) -> bool:
+    """True if saving ``access`` would take the signed-in admin's own admin rights away.
+
+    Their rights came through one entry (``me.via``); keeping that entry, or naming them, keeps them an admin.
+    """
+    if not me.shared:
+        return False
+    keep = {x.lower() for x in access.admins}
+    return me.user.lower() not in keep and me.via.lower() not in keep
+
+
+def _access_section(app: AppSettings, me: identity.Viewer):
+    ss = st.session_state
+    st.markdown(style.section("Who may sign in"), unsafe_allow_html=True)
+    st.caption(
+        "Applies when the tuner runs as a shared server (`pict serve`, or the Windows service). People sign in with "
+        "their Windows account. Write each account or group as DOMAIN\\name, one per line; a group covers everyone in "
+        "it. Admins can use the tuner and change these settings; users can use the tuner. Changes apply the next time "
+        "someone signs in (at the latest 8 hours later, or when the server restarts). PI is read as the account the "
+        "server runs as, so give that account a read-only PI mapping.")
+    v = ss.get("admin_access_v", 0)
+    c1, c2 = st.columns(2)
+    admins_text = c1.text_area("Admins", "\n".join(app.access.admins), height=130, key=f"access_admins_{v}",
+                               help="BUILTIN\\Administrators is the server's local Administrators group.")
+    users_text = c2.text_area("Users", "\n".join(app.access.users), height=130, key=f"access_users_{v}",
+                              help="For example CORP\\PI Engineers. Leave empty if only admins use the tuner.")
+    new = AccessSettings(admins=split_names(admins_text), users=split_names(users_text))
+    error = ""
+    if not new.admins:
+        error = "Keep at least one admin entry, or nobody can change these settings."
+    elif would_lock_out(me, new):
+        error = (f"You are an admin through **{me.via}**. Keep that entry, or add {me.user}, so you don't lock "
+                 "yourself out.")
+    bad = [x for x in new.admins + new.users if "\\" not in x and "@" not in x]
+    if bad:
+        st.warning(f"Write accounts and groups with their domain, as DOMAIN\\name: {', '.join(bad)}")
+    if error:
+        st.error(error)
+    b1, b2, _ = st.columns([1, 1, 3])
+    if b1.button("Save access", type="primary", key="admin_save_access", use_container_width=True,
+                 disabled=bool(error) or new == app.access):
+        if _save(dataclasses.replace(app, access=new),
+                 f"access: admins {', '.join(new.admins)}; users {', '.join(new.users) or 'none'}"):
+            _bump("admin_access_v")
+            st.rerun()
+    if b2.button("Discard edits", key="admin_discard_access", use_container_width=True, disabled=new == app.access):
+        _bump("admin_access_v")
+        st.rerun()
+
+
+def _activity_section():
+    rows = read_activity(200)
+    st.markdown(style.section("Recent activity"), unsafe_allow_html=True)
+    if not rows:
+        st.caption("Sign-ins, turned-away visits and saved settings are listed here once the server has some.")
+        return
+    df = pd.DataFrame(rows, columns=["Time", "Who", "What", "Detail"])
+    st.dataframe(df, hide_index=True, use_container_width=True, height=min(80 + 35 * len(df), 360))
+    st.caption("The newest 200 entries of the activity log, kept beside the settings file.")
+
+
+def render(me: identity.Viewer | None = None):
+    me = me or identity.Viewer("", True)
     app = app_settings()
     st.markdown(style.header("Admin settings"), unsafe_allow_html=True)
     if st.session_state.get("admin_error"):
         st.error(f"The settings file could not be read, so defaults are shown: {st.session_state.admin_error}")
     st.caption(f"Saved in {settings_path()}. Recommendations only: nothing here writes to PI.")
+    if _changed_elsewhere():
+        last = next((r for r in read_activity(50) if r[2] == "settings saved"), None)
+        who = f" by {last[1]} at {_when(last[0])}" if last and last[1] != "-" else ""
+        c1, c2 = st.columns([4, 1])
+        c1.warning(f"The settings were saved{who} since you opened this page. Load them before making changes.")
+        if c2.button("Load the latest settings", key="admin_reload", use_container_width=True):
+            for k in ("admin_servers_v", "admin_templates_v", "admin_access_v"):
+                _bump(k)
+            for k in ("admin", "admin_max_results", "admin_default"):   # widgets showing the old values
+                st.session_state.pop(k, None)
+            st.rerun()
     _servers_section(app)
     _search_section(app)
     _templates_section(app)
+    _access_section(app, me)
+    if me.shared:
+        _activity_section()
+
+
+def _when(stamp: str) -> str:
+    try:
+        return datetime.fromisoformat(stamp).strftime("%H:%M on %b %d")
+    except ValueError:
+        return stamp

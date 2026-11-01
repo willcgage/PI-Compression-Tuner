@@ -105,6 +105,23 @@ you want in the table, and press Read. You can also
 load a capture folder's CSV files instead.
 
 
+6. Shared server for several admins (optional)
+----------------------------------------------
+One machine can serve the UI to everyone, with Windows sign-in. Either run the
+installer (PI-Compression-Tuner-<version>-Setup.exe) and tick "Run the tuner as a
+Windows service", or right-click "Set up shared server.cmd" in this folder and choose
+Run as administrator. People then open http://THIS-SERVER:8501/ in Edge or Chrome
+and are signed in with their Windows account.
+
+- Who may sign in: Admin settings, "Who may sign in". At first only this machine's
+  local Administrators group can. Add your PI admins' group, for example CORP\PI Admins.
+- PI is read as the service's account (NetworkService, which is this computer's
+  domain account DOMAIN\COMPUTER$, unless you chose another). Give it a read-only
+  PI mapping.
+- Settings, the activity log and service logs: C:\ProgramData\PI Compression Tuner
+- More detail, including HTTPS and Kerberos: docs\multi-user.md in the repository.
+
+
 What to send back
 -----------------
 - The text printed by "pict pi check" (and the self-test, if it failed).
