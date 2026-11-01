@@ -28,6 +28,7 @@ _VERDICT_CLASS = {
     Classification.STORING_NOISE: "v-noise",
     Classification.LOSING_DETAIL: "v-loss",
     Classification.LITTLE_TO_GAIN: "v-info",
+    Classification.EXCDEV_TOO_WIDE: "v-loss",
     Classification.RANGE_MISMATCH: "v-info",
     Classification.NOT_MOVING: "v-none",
     Classification.TOO_FEW_EVENTS: "v-none",
@@ -269,7 +270,7 @@ def _point_section(r: TuneResult, s: Series, opts: TuneOptions, selected: bool) 
     days = max(s.duration, 1) / 86400 if len(s) else 0
     prop = present.proposal(r)
     sheet = ""
-    if r.changes:
+    if r.in_sheet:
         sheet = ('<span class="sheet">PI Builder sheet: <b>selected</b></span>' if selected
                  else '<span class="sheet">PI Builder sheet: listed, not selected</span>')
     head = (f'<div class="phead"><h2>{html.escape(r.tag)}</h2><span class="chip {vc}"><i></i>{r.classification.value}</span>'
@@ -324,10 +325,11 @@ def _point_section(r: TuneResult, s: Series, opts: TuneOptions, selected: bool) 
                  f'<figure><figcaption>Largest miss · {opts.window_s / 60:g} min around the biggest error</figcaption>'
                  f'{zchart}</figure></div>')
 
+    shown = present.shown_config(r)
     side = (f'<div><div class="subh">Signal</div>{present.profile(present.signal_profile(r, s, cfg))}'
             f'{present.notes([n for n in r.notes if html.escape(n) not in finding])}</div>')
     parts.append(f'<div class="two"><div><div class="subh">Settings</div>'
-                 f'{present.attrs_table(present.attr_rows(cfg, prop.config if prop else None), proposed=prop is not None)}'
+                 f'{present.attrs_table(present.attr_rows(cfg, shown), proposed=shown is not None)}'
                  f'</div>{side}</div>')
     return f'<section class="point" id="{_anchor(r.tag)}">{"".join(parts)}{back}</section>'
 
@@ -376,7 +378,7 @@ def write_report(results: list[TuneResult], series: dict[str, Series], opts: Tun
                if opts.input_mode == "raw" else "")
             + f'<td>{_arrow(f"{cur.score.retention:.1%}", f"{prop.score.retention:.1%}" if prop else None) if cur else "–"}</td>'
             f'<td>{_arrow(present.fmt_count(cur.events_per_day), present.fmt_count(prop.events_per_day) if prop else None) if cur else "–"}</td>'
-            f'<td>{ch}</td><td>{"x" if r.tag in selected and r.changes else ""}</td></tr>')
+            f'<td>{ch}</td><td>{"x" if r.tag in selected and r.in_sheet else ""}</td></tr>')
     exc_head = "<th>ExcDev</th>" if opts.input_mode == "raw" else ""
     table = ('<div class="wrap"><table class="list"><thead><tr><th>Point</th><th>Verdict</th><th>CompDev</th>'
              f'{exc_head}<th>Retention</th><th>Events / day</th><th>Volume change</th><th>Selected</th></tr></thead>'
