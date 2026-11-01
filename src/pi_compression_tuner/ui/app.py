@@ -34,7 +34,7 @@ from pi_compression_tuner.simulate import simulate_archive
 from pi_compression_tuner.sources.csvfiles import read_configs, read_point_info, read_series
 from pi_compression_tuner.templates import match, point_info, tune_with_template
 from pi_compression_tuner.tune import Classification, TuneOptions, evaluate_config, tradeoff_curve
-from pi_compression_tuner.ui import admin, duplicates, style
+from pi_compression_tuner.ui import admin, duplicates, identity, style
 from pi_compression_tuner.ui.style import INK, VERDICT_COLOR
 
 WINDOWS = {"15 min": 900, "30 min": 1800, "1 h": 3600, "4 h": 14400}
@@ -47,6 +47,13 @@ ss = st.session_state
 for k, v in {"series": None, "configs": {}, "infos": {}, "results": None, "adopted": {}, "source_note": "",
              "export_choice": {}, "table_v": 0, "curves": {}, "view": "tuner", "moments": {}, "km_v": 0}.items():
     ss.setdefault(k, v)
+
+me = identity.viewer()
+if me is None:
+    st.error("You are not signed in. Reload the page to sign in with your Windows account.")
+    st.stop()
+if ss.view == "admin" and not me.is_admin:
+    ss.view = "tuner"
 
 
 def _reset_results():
@@ -177,12 +184,15 @@ def _go(view):
 with st.sidebar:
     st.markdown('<div class="pct-brand"><b>PI Compression Tuner</b><span>Read-only · recommendations</span></div>',
                 unsafe_allow_html=True)
+    if me.shared:
+        st.caption(f"Signed in as **{me.user}**" + (" · admin" if me.is_admin else ""))
     if ss.view == "admin":
         st.button("← Back to the tuner", key="admin_back", use_container_width=True, on_click=_go, args=("tuner",))
-        st.caption("Admin settings: PI servers, the search limit and point templates.")
+        st.caption("Admin settings: PI servers, the search limit and point templates"
+                   + (", who may sign in, and recent activity." if me.shared else "."))
 
 if ss.view == "admin":
-    admin.render()
+    admin.render(me)
     st.stop()
 
 with st.sidebar:
@@ -315,8 +325,9 @@ with st.sidebar:
                                      "and any target or error limit the template sets.")
     run = st.button("Run tuning", type="primary", disabled=ss.series is None, key="run", use_container_width=True)
     st.divider()
-    st.button("Admin settings", key="admin_open", use_container_width=True, on_click=_go, args=("admin",),
-              help="PI servers, the search limit and point templates.")
+    if me.is_admin:
+        st.button("Admin settings", key="admin_open", use_container_width=True, on_click=_go, args=("admin",),
+                  help="PI servers, the search limit, point templates" + (" and who may sign in." if me.shared else "."))
 
 opts = TuneOptions(target=target_pct / 100, input_mode=mode, window_s=WINDOWS[window], max_error=max_err or None,
                    max_error_pct_span=max_err_pct or None, excdev_ratio=None if search_ratio else excdev_ratio)
@@ -367,7 +378,12 @@ run_opts: TuneOptions = ss.get("opts", opts)
 def effective(r):
     """The result with an adopted probe setting in place of the proposal."""
     a = ss.adopted.get(r.tag)
-    return dataclasses.replace(r, recommended=a, notes=r.notes + ["CompDev adopted from the probe."]) if a else r
+    if not a:
+        return r
+    if r.recommended is not None:  # keep any Zero/Span fix the proposal carries
+        a = dataclasses.replace(a, config=dataclasses.replace(a.config, zero=r.recommended.config.zero,
+                                                              span=r.recommended.config.span))
+    return dataclasses.replace(r, recommended=a, notes=r.notes + ["CompDev adopted from the probe."])
 
 
 results = [effective(r) for r in ss.results]
@@ -448,11 +464,30 @@ with tab_overview:
     for c in ("CurrentEventsPerDay", "RecommendedEventsPerDay"):
         df[c] = df[c].round()
     view = df[df["Classification"].isin(shown)]
+    sheet_tags = [t for t in view["Tag"] if by_tag[t].in_sheet]
+
+    def _pick_all(tags, on):
+        ss.export_choice.update({t: on for t in tags})
+        ss.table_v += 1
+
+    b1, b2, b3 = st.columns([2, 2, 5], vertical_alignment="center")
+    b1.button(f"Select all shown ({len(sheet_tags)})", key="sel_all", on_click=_pick_all, args=(sheet_tags, True),
+              disabled=not sheet_tags, use_container_width=True)
+    b2.button("Clear all shown", key="sel_none", on_click=_pick_all, args=(sheet_tags, False),
+              disabled=not sheet_tags, use_container_width=True)
+    b3.markdown('<p class="pct-note">Filter by verdict above to select a whole group, then untick single rows. '
+                "Only points with a proposed change or suggestion go in the sheet.</p>", unsafe_allow_html=True)
     cols = ["Export", "Tag", "Classification", "Template", "CurrentCompDev", "RecommendedCompDev", "RecommendedExcDev",
+            "SuggestedExcDev", "SuggestedCompDev", "ProposedSpan",
             "CurrentRetention", "RecommendedRetention", "CurrentEventsPerDay", "RecommendedEventsPerDay",
             "EventChangePercent"]
     if run_opts.input_mode != "raw":
         cols.remove("RecommendedExcDev")
+    # Show the suggestion and Span columns only when some row has one, and Span only where it changes.
+    cur_span = {r.tag: r.current.config.span for r in results if r.current}
+    view = view.assign(ProposedSpan=[v if v == v and v != cur_span.get(t) else None
+                                     for t, v in zip(view["Tag"], view["ProposedSpan"])])
+    cols = [c for c in cols if not (c.startswith(("Suggested", "Proposed")) and view[c].isna().all())]
     edited = st.data_editor(
         view[cols], hide_index=True, use_container_width=True, key=f"table_{ss.table_v}",
         disabled=[c for c in cols if c != "Export"],
@@ -470,6 +505,11 @@ with tab_overview:
             "CurrentEventsPerDay": st.column_config.NumberColumn("Events/day", format="localized", width="small"),
             "RecommendedEventsPerDay": st.column_config.NumberColumn("→ proposed", format="localized", width="small"),
             "EventChangePercent": st.column_config.NumberColumn("Volume change", format="%+.1f%%", width="small"),
+            "SuggestedExcDev": st.column_config.NumberColumn("Try ExcDev", format="%.4g", width="small",
+                                                             help="ExcDev too wide: a narrower ExcDev to trial for a day."),
+            "SuggestedCompDev": st.column_config.NumberColumn("Try CompDev", format="%.4g", width="small"),
+            "ProposedSpan": st.column_config.NumberColumn("New Span", format="%.6g", width="small",
+                                                          help="Range mismatch: proposed Span (see Point detail for Zero)."),
         },
     )
     ss.export_choice.update(dict(zip(edited["Tag"], edited["Export"])))
@@ -501,7 +541,7 @@ with tab_point:
     h1, h2 = st.columns([5, 2], vertical_alignment="center")
     h1.markdown(f'<div class="pct-point"><h3>{style.esc(tag)}</h3>{style.chip(r.classification)}'
                 f'<span class="meta">{len(s):,} input events over {days:.1f} days</span></div>', unsafe_allow_html=True)
-    if r.changes:
+    if r.in_sheet:
         default_on = ss.export_choice.get(tag, r.ready_to_export or adopted)
 
         def _toggle(t=tag):
@@ -522,8 +562,9 @@ with tab_point:
     a1, a2 = st.columns([3, 2], gap="large")
     with a1:
         st.markdown(style.section("Settings"), unsafe_allow_html=True)
-        st.markdown(style.attrs_table(present.attr_rows(cfg_now, prop.config if prop else None),
-                                      proposed=prop is not None), unsafe_allow_html=True)
+        shown = present.shown_config(r)
+        st.markdown(style.attrs_table(present.attr_rows(cfg_now, shown), proposed=shown is not None),
+                    unsafe_allow_html=True)
     with a2:
         st.markdown(style.section("Signal"), unsafe_allow_html=True)
         items = present.signal_profile(r, s, cfg_now)
@@ -777,7 +818,7 @@ with tab_point:
 
 with tab_export:
     selected = {t for t, on in ss.export_choice.items() if on} | {
-        r.tag for r in results if r.tag not in ss.export_choice and r.changes and (r.ready_to_export or r.tag in ss.adopted)}
+        r.tag for r in results if r.tag not in ss.export_choice and r.in_sheet and (r.ready_to_export or r.tag in ss.adopted)}
     left, right = st.columns([5, 12], gap="large")
     with left:
         server_name = st.text_input("Data Archive (PI Builder Parent column)",

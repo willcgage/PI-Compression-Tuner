@@ -424,5 +424,104 @@ def ui(port, host):
                                       "--theme.textColor", "#17222a", "--theme.secondaryBackgroundColor", "#f4f7f8"]))
 
 
+@main.command()
+@click.option("--host", default="0.0.0.0", show_default=True, help="Address to listen on; 0.0.0.0 serves other machines.")
+@click.option("--port", type=int, default=8501, show_default=True)
+@click.option("--cert", type=click.Path(exists=True, dir_okay=False), help="TLS certificate (PEM) to serve https.")
+@click.option("--key", type=click.Path(exists=True, dir_okay=False), help="The certificate's private key (PEM).")
+@click.option("--no-sign-in", is_flag=True,
+              help="Skip Windows sign-in: anyone who can reach the server is an admin. Only for a trusted machine.")
+def serve(host, port, cert, key, no_sign_in):
+    """Serve the web UI to several people, with Windows sign-in.
+
+    People sign in with their Windows account. The [access] lists on the Admin page say who may use the
+    tuner and who may change its settings; by default only this machine's Administrators group may. PI is
+    read as the account this runs as.
+    """
+    if bool(cert) != bool(key):
+        raise click.UsageError("--cert and --key go together")
+    try:
+        import streamlit  # noqa: F401
+    except ImportError:
+        raise click.ClickException("The UI needs: pip install 'pi-compression-tuner[ui]'")
+    from . import serve as serve_mod
+    try:
+        serve_mod.run(host=host, port=port, sign_in=not no_sign_in, cert=cert, key=key)
+    except RuntimeError as e:
+        raise click.ClickException(str(e))
+
+
+@main.group()
+def service():
+    """Run the shared server (pict serve) as a Windows service. Needs an administrator prompt."""
+
+
+def _service_call(fn, *args, **kwargs):
+    from . import service as svc
+    try:
+        fn(*args, say=click.echo, **kwargs)
+    except (RuntimeError, OSError) as e:
+        raise click.ClickException(str(e))
+    except Exception as e:  # pywin32 errors carry their Windows message
+        raise click.ClickException(f"{type(e).__name__}: {e}")
+    return svc
+
+
+@service.command("install")
+@click.option("--port", type=int, default=8501, show_default=True)
+@click.option("--host", default="0.0.0.0", show_default=True)
+@click.option("--account", default="NT AUTHORITY\\NetworkService", show_default=True,
+              help="Windows account the service runs as, and reads PI as. A named account's password is read from "
+                   "PICT_SERVICE_PASSWORD or asked for; a gMSA (ending in $) needs none.")
+@click.option("--admins", help="Accounts or groups that may change the settings, separated by ';'. "
+                               "Default: keep the saved list (BUILTIN\\Administrators at first).")
+@click.option("--cert", type=click.Path(exists=True, dir_okay=False), help="TLS certificate (PEM) to serve https.")
+@click.option("--key", type=click.Path(exists=True, dir_okay=False), help="The certificate's private key (PEM).")
+@click.option("--open-firewall", is_flag=True, help="Allow the port through Windows Firewall (domain and private).")
+@click.option("--no-start", is_flag=True, help="Install without starting it.")
+def service_install(port, host, account, admins, cert, key, open_firewall, no_start):
+    """Install (or reinstall) the service and start it."""
+    from . import service as svc
+    from .access import split_names
+    if bool(cert) != bool(key):
+        raise click.UsageError("--cert and --key go together")
+    opts = svc.ServiceOptions(port=port, host=host, account=account,
+                              cert=str(Path(cert).resolve()) if cert else "", key=str(Path(key).resolve()) if key else "")
+    password = os.environ.get(svc.PASSWORD_ENV, "")
+    if svc.needs_password(account) and not password:
+        password = click.prompt(f"Password for {account}", hide_input=True)
+    _service_call(svc.install, opts, password=password, admins=split_names(admins) if admins else None,
+                  open_firewall=open_firewall, start=not no_start)
+
+
+@service.command("uninstall")
+def service_uninstall():
+    """Stop and remove the service. Its settings and logs are kept."""
+    from . import service as svc
+    _service_call(svc.uninstall)
+
+
+@service.command("start")
+def service_start():
+    from . import service as svc
+    _service_call(svc.control, "start")
+
+
+@service.command("stop")
+def service_stop():
+    from . import service as svc
+    _service_call(svc.control, "stop")
+
+
+@service.command("status")
+def service_status():
+    """Started, Stopped or NonExistent."""
+    from . import service as svc
+    try:
+        click.echo(svc.status())
+    except RuntimeError as e:
+        raise click.ClickException(str(e))
+
+
 if __name__ == "__main__":
     main()

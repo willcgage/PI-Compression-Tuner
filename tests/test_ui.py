@@ -271,3 +271,84 @@ def test_alarm_limits_feed_suggest():
     series = at.session_state.series["DEMO.TEMP.PV"]
     crossings = alarm_crossings(series, (54.0, 66.0), estimate_noise(series.v))
     assert len(crossings) and set(crossings.tolist()) <= set(picked.value)
+
+
+def _signed_in(monkeypatch, user, role, via=None):
+    from pi_compression_tuner.ui import identity
+    monkeypatch.setenv("PICT_SIGNIN", "windows")
+    monkeypatch.setattr(identity, "headers", lambda: {"X-Pict-User": user, "X-Pict-Role": role,
+                                                     "X-Pict-Via": via or user})
+
+
+def test_shared_server_user_sees_who_they_are_and_no_admin_button(monkeypatch):
+    _signed_in(monkeypatch, "CORP\\carol", "user", "CORP\\PI Engineers")
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.run()
+    assert not at.exception, at.exception
+    assert any("Signed in as **CORP\\carol**" in c.value for c in at.sidebar.caption)
+    assert "admin_open" not in {b.key for b in at.button}
+
+
+def test_shared_server_without_identity_stops(monkeypatch):
+    from pi_compression_tuner.ui import identity
+    monkeypatch.setenv("PICT_SIGNIN", "windows")
+    monkeypatch.setattr(identity, "headers", lambda: {})
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.run()
+    assert at.error and "not signed in" in at.error[0].value
+
+
+def test_admin_edits_access_and_cannot_lock_themselves_out(monkeypatch):
+    from pi_compression_tuner.access import read_activity
+    from pi_compression_tuner.settings import load_app_settings
+    _signed_in(monkeypatch, "CORP\\ann", "admin", "BUILTIN\\Administrators")
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.run()
+    at.button(key="admin_open").click().run()
+    assert not at.exception, at.exception
+    assert any("Recent activity" in m.value for m in at.markdown)
+    at.text_area(key="access_admins_0").input("CORP\\PI Admins").run()
+    assert at.error and "lock yourself out" in at.error[0].value
+    assert at.button(key="admin_save_access").disabled
+    at.text_area(key="access_admins_0").input("BUILTIN\\Administrators\nCORP\\PI Admins")
+    at.text_area(key="access_users_0").input("CORP\\PI Engineers; CORP\\jdoe").run()
+    at.button(key="admin_save_access").click().run()
+    assert not at.exception and not at.error, (at.exception, at.error)
+    access = load_app_settings().access
+    assert access.admins == ["BUILTIN\\Administrators", "CORP\\PI Admins"]
+    assert access.users == ["CORP\\PI Engineers", "CORP\\jdoe"]
+    assert read_activity()[0][1:3] == ("CORP\\ann", "settings saved")
+
+
+def test_admin_save_is_refused_when_someone_else_saved_first(monkeypatch):
+    import time
+
+    from pi_compression_tuner.settings import AppSettings, load_app_settings, save_app_settings
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.run()
+    at.button(key="admin_open").click().run()
+    time.sleep(0.05)
+    save_app_settings(AppSettings(max_results=777))   # another admin, on another page
+    at.number_input(key="admin_max_results").set_value(5000).run()
+    assert any("saved" in w.value for w in at.warning)
+    at.button(key="admin_save_search").click().run()
+    assert at.error and "Someone else saved" in at.error[0].value
+    assert load_app_settings().max_results == 777
+    at.button(key="admin_reload").click().run()
+    assert at.number_input(key="admin_max_results").value == 777
+
+def test_select_and_clear_all_shown_points():
+    at = _loaded_and_run()
+
+    def selected():
+        kpis = " ".join(m.value for m in at.markdown if "marked x for publishing" in m.value)
+        import re
+        return int(re.search(r"Selected</div><div[^>]*>(\d+)", kpis).group(1))
+
+    n = selected()
+    assert n > 0
+    at.button(key="sel_none").click().run()
+    assert not at.exception, at.exception
+    assert selected() == 0
+    at.button(key="sel_all").click().run()
+    assert selected() >= n

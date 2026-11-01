@@ -115,3 +115,36 @@ def test_search_reaches_past_the_noise_grid_when_the_signal_jumps():
     assert r.noise < 2
     assert r.recommended.config.compdev > 40 * r.noise
     assert 0.96 <= r.recommended.score.retention < 0.99
+
+
+def test_range_mismatch_proposes_zero_and_span():
+    from pi_compression_tuner.tune import suggest_zero_span
+
+    assert suggest_zero_span(1038, 1084) == (0.0, 1200.0)
+    assert suggest_zero_span(25.25, 161.6) == (0.0, 200.0)
+    assert suggest_zero_span(-12, 40) == (-15.0, 65.0)
+    rng = np.random.default_rng(1)
+    t = np.arange(0.0, 86400, 6.0)
+    s = Series(t, 1060 + 20 * np.sin(2 * np.pi * t / 7200) + rng.normal(0, 0.5, len(t)))
+    r = tune_point("P", s, PointConfig(excdev=0.1, compdev=0.2, span=100))
+    assert r.classification == Classification.RANGE_MISMATCH and not r.ready_to_export
+    cfg = r.recommended.config
+    assert (cfg.zero, cfg.span) == (0.0, 1200.0) and r.changes
+    assert any("Suggested Zero 0 and Span 1200" in n for n in r.notes)
+
+
+def test_excdev_too_wide_suggests_a_narrower_excdev():
+    from pi_compression_tuner.tune import evaluate_config
+
+    rng = np.random.default_rng(0)
+    t = np.arange(0.0, 86400, 6.0)
+    s = Series(t, 14 + 0.25 * np.sin(2 * np.pi * t / 7200) + rng.normal(0, 0.005, len(t)))
+    r = tune_point("E", s, PointConfig(excdev=0.1, compdev=0.2, span=100))
+    assert r.classification == Classification.EXCDEV_TOO_WIDE
+    assert r.recommended is None and not r.changes and not r.ready_to_export
+    sg = r.suggested
+    assert sg.excdev < 0.1 and sg.compdev == 2 * sg.excdev
+    # On the raw signal, the suggestion keeps the detail the current ExcDev throws away.
+    assert evaluate_config(s, sg, TuneOptions(input_mode="raw")).score.retention >= 0.95
+    # With ExcDev already fine, nothing passing is still "Little to gain", not an ExcDev problem.
+    assert tune_point("E", s, PointConfig(excdev=0.001, compdev=0.2, span=100)).classification != Classification.EXCDEV_TOO_WIDE
