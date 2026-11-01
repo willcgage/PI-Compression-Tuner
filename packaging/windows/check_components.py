@@ -31,6 +31,18 @@ def sspi():
     import requests_negotiate_sspi  # noqa: F401
 
 
+def server():
+    """Windows sign-in for the shared server, and the service host."""
+    import sspi  # noqa: F401  (pywin32)
+    import win32security  # noqa: F401
+    host = Path(__file__).resolve().parent / "service" / "pict-service.exe"
+    if not host.is_file():
+        raise FileNotFoundError(host)
+    from pi_compression_tuner.serve import windows_sign_in_available
+    if not windows_sign_in_available():
+        raise RuntimeError("SSPI not usable")
+
+
 def dotnet():
     import clr  # noqa: F401
     import System
@@ -66,6 +78,7 @@ if "--install-only" in sys.argv:
     sys.exit(1 if failed else 0)
 check("core and UI", core)
 check("Windows sign-in for the PI Web API", sspi)
+check("Shared server sign-in and service host", server)
 check("pythonnet", dotnet)
 check("AF SDK", afsdk, "That is fine if you use the PI Web API.")
 sys.exit(1 if failed else 0)

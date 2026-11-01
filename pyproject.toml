@@ -20,6 +20,7 @@ dependencies = [
 kerberos = ["requests-negotiate-sspi; sys_platform == 'win32'", "requests-kerberos; sys_platform != 'win32'"]
 afsdk = ["pythonnet>=3.0; sys_platform == 'win32'"]
 ui = ["streamlit>=1.66", "plotly>=5.18"]
+server = ["streamlit>=1.66", "plotly>=5.18", "pywin32>=306; sys_platform == 'win32'"]
 dev = ["pytest>=7", "streamlit>=1.66", "plotly>=5.18"]
 
 [project.scripts]

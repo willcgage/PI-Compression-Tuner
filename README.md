@@ -53,6 +53,7 @@ F   = min(10th percentile of F_w, whole-series F)  headline score
 
 ```bash
 pip install -e ".[ui,kerberos,afsdk]"   # ui: the web UI; kerberos: Windows sign-in to the PI Web API; afsdk: AF SDK fallback (Windows)
+pip install -e ".[server]"               # pict serve: the shared server with Windows sign-in (Windows)
 pip install -e ".[dev]" && pytest        # development
 ```
 
@@ -91,6 +92,15 @@ pict ui          # opens http://localhost:8501
    - Click **Adopt** to export the probe value instead of the proposal.
    - **Key moments**: see below.
 5. **Export tab:** preview and download the PI Builder sheet, the results table, the HTML report, or the key moments you marked.
+
+### Shared server for several people
+
+```bash
+pict serve                     # http://THIS-SERVER:8501/, Windows sign-in
+pict service install           # the same, as a Windows service (administrator prompt)
+```
+
+`pict serve` runs the UI for several people at once. Each person signs in with their Windows account (Kerberos, or NTLM where Kerberos isn't set up) and gets their own session. The **Who may sign in** section of the Admin page holds two lists of Windows accounts and groups: **admins** may change the settings, **users** may use the tuner. At first only the server's local Administrators group gets in. Sign-ins, turned-away visits and saved settings go to an activity log shown on the Admin page. If two admins edit the settings at once, the second save is refused rather than overwriting the first. PI is read as the account the server runs as. The Windows installer (`PI-Compression-Tuner-<version>-Setup.exe`, published with the bundle) can set the service up. See [docs/multi-user.md](docs/multi-user.md).
 
 ## Key moments
 

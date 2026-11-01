@@ -1,7 +1,8 @@
 name: Windows bundle
 
 # Builds the offline Windows bundle and tests it on a clean Windows machine:
-# the self-test, a PI check against no server (it must fail cleanly), and the UI.
+# the self-test, a PI check against no server (it must fail cleanly), and the UI. Then builds the
+# installer from it and tests the shared server as a Windows service with Windows sign-in.
 on:
   push:
     paths:
@@ -75,11 +76,65 @@ jobs:
           if ($LASTEXITCODE -ne 1) { throw "a missing file went unnoticed" }
           exit 0
 
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $zip = (Get-ChildItem dist\*.zip).FullName
+          Expand-Archive $zip -DestinationPath C:\installer-src
+          $src = (Get-ChildItem C:\installer-src\PI-Compression-Tuner-*).FullName
+          $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress | Out-Null
+            $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          & $iscc /Q "/DAppVersion=$version" "/DSourceDir=$src" "/DOutputDir=$pwd\dist" packaging\installer\pict.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          $setup = (Get-ChildItem dist\*-Setup.exe).FullName
+          (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower() + "  " + (Split-Path $setup -Leaf) | Set-Content "$setup.sha256"
+          Get-ChildItem dist
+
+      - name: Installer sets up the shared server as a service
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist\*-Setup.exe).FullName
+          $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=service,firewall','/PORT=8601','/LOG=C:\setup.log' -Wait -PassThru
+          Get-Content "$env:ProgramData\PI Compression Tuner\service-install.log" -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { Get-Content C:\setup.log -Tail 40; throw "setup exited with $($p.ExitCode)" }
+          $svc = Get-Service PICompressionTuner
+          $svc | Format-List Name, Status, StartType
+          $ok = $false
+          foreach ($i in 1..60) {
+            Start-Sleep -Seconds 2
+            try { if ((Invoke-WebRequest http://localhost:8601/_stcore/health -UseBasicParsing).Content -eq "ok") { $ok = $true; break } } catch {}
+          }
+          if (-not $ok) { Get-ChildItem "$env:ProgramData\PI Compression Tuner\logs" | ForEach-Object { Get-Content $_.FullName -Tail 40 }; throw "the service did not answer" }
+
+          # No sign-in: a Negotiate challenge. Windows sign-in as this (admin) account: the UI.
+          $r = Invoke-WebRequest http://localhost:8601/ -SkipHttpErrorCheck -UseBasicParsing
+          if ($r.StatusCode -ne 401 -or "$($r.Headers['WWW-Authenticate'])" -notmatch "Negotiate") { throw "expected a 401 Negotiate challenge, got $($r.StatusCode)" }
+          $r = Invoke-WebRequest http://localhost:8601/ -UseDefaultCredentials -UseBasicParsing -SessionVariable web
+          if ($r.StatusCode -ne 200) { throw "Windows sign-in failed: $($r.StatusCode)" }
+          if (-not ($web.Cookies.GetCookies("http://localhost:8601/") | Where-Object Name -eq "pict_signin")) { throw "no sign-in cookie" }
+          $log = Get-Content "$env:ProgramData\PI Compression Tuner\pict-activity.log" -Raw
+          $log
+          if ($log -notmatch "signed in\tadmin through BUILTIN\\Administrators") { throw "the sign-in was not logged as an admin" }
+          if (-not (Get-NetFirewallRule -DisplayName "PI Compression Tuner" -ErrorAction SilentlyContinue)) { throw "no firewall rule" }
+
+      - name: Uninstall removes the service
+        shell: pwsh
+        run: |
+          $p = Start-Process "$env:ProgramFiles\PI Compression Tuner\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES' -Wait -PassThru
+          Start-Sleep -Seconds 5
+          if (Get-Service PICompressionTuner -ErrorAction SilentlyContinue) { throw "the service is still installed" }
+          if (Get-NetFirewallRule -DisplayName "PI Compression Tuner" -ErrorAction SilentlyContinue) { throw "the firewall rule is still there" }
+
       - uses: actions/upload-artifact@v4
         with:
           name: PI-Compression-Tuner-win64
           path: |
             dist/*.zip
+            dist/*.exe
             dist/*.sha256
           compression-level: 0
           retention-days: 30
@@ -93,7 +148,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $zip = (Get-ChildItem dist\*.zip).FullName
+          $setup = (Get-ChildItem dist\*-Setup.exe).FullName
           $tag = "bundle-" + [IO.Path]::GetFileNameWithoutExtension($zip).Replace("PI-Compression-Tuner-", "")
           gh release delete $tag --cleanup-tag --yes 2>$null
-          $notes = "Offline Windows bundle for site testing, built and tested from ${{ github.ref_name }} at ${{ github.sha }}. Unzip it and follow START-HERE.txt inside."
-          gh release create $tag $zip "$zip.sha256" --target ${{ github.sha }} --prerelease --title "Site test bundle $tag" --notes $notes
+          $notes = "Offline Windows bundle for site testing, built and tested from ${{ github.ref_name }} at ${{ github.sha }}. Unzip it and follow START-HERE.txt inside, or run the Setup.exe installer, which can also set up the shared server as a Windows service."
+          gh release create $tag $zip "$zip.sha256" $setup "$setup.sha256" --target ${{ github.sha }} --prerelease --title "Site test bundle $tag" --notes $notes
