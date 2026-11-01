@@ -113,7 +113,7 @@ jobs:
           # No sign-in: a Negotiate challenge. Windows sign-in as this (admin) account: the UI.
           $r = Invoke-WebRequest http://localhost:8601/ -SkipHttpErrorCheck -UseBasicParsing
           if ($r.StatusCode -ne 401 -or "$($r.Headers['WWW-Authenticate'])" -notmatch "Negotiate") { throw "expected a 401 Negotiate challenge, got $($r.StatusCode)" }
-          $r = Invoke-WebRequest http://localhost:8601/ -UseDefaultCredentials -UseBasicParsing -SessionVariable web
+          $r = Invoke-WebRequest http://localhost:8601/ -UseDefaultCredentials -AllowUnencryptedAuthentication -UseBasicParsing -SessionVariable web
           if ($r.StatusCode -ne 200) { throw "Windows sign-in failed: $($r.StatusCode)" }
           if (-not ($web.Cookies.GetCookies("http://localhost:8601/") | Where-Object Name -eq "pict_signin")) { throw "no sign-in cookie" }
           $log = Get-Content "$env:ProgramData\PI Compression Tuner\pict-activity.log" -Raw
