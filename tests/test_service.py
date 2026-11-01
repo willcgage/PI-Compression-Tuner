@@ -76,3 +76,12 @@ def test_serve_without_windows_sign_in_says_so(monkeypatch):
     monkeypatch.setattr(serve, "windows_sign_in_available", lambda: False)
     r = CliRunner().invoke(main, ["serve"])
     assert r.exit_code == 1 and "Windows sign-in needs Windows" in r.output
+
+
+def test_status_from_sc_query():
+    running = "SERVICE_NAME: PICompressionTuner\n        STATE              : 4  RUNNING\n"
+    stopped = "SERVICE_NAME: PICompressionTuner\n        STATE              : 1  STOPPED\n"
+    missing = "[SC] EnumQueryServicesStatus:OpenService FAILED 1060:\n\nThe specified service does not exist."
+    assert svc.parse_sc_query(0, running) == "Started"
+    assert svc.parse_sc_query(0, stopped) == "Stopped"
+    assert svc.parse_sc_query(1060, missing) == "NonExistent"

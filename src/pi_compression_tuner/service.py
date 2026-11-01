@@ -20,6 +20,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -170,12 +171,23 @@ def _host(root: Path | None = None) -> Path:
     return exe
 
 
+def parse_sc_query(returncode: int, output: str) -> str:
+    """Started, Stopped or NonExistent, from ``sc.exe query``. 1060: no such service."""
+    if returncode == 1060 or "1060" in output:
+        return "NonExistent"
+    for line in output.splitlines():
+        if "STATE" in line:
+            return "Started" if "RUNNING" in line else "Stopped"
+    return "NonExistent" if returncode else "Stopped"
+
+
 def status() -> str:
-    """Started, Stopped or NonExistent, as the service host reports it."""
+    """Started, Stopped or NonExistent. Asks Windows directly, so it works before the service host's
+    configuration exists (on a first install) and after it is gone."""
     if sys.platform != "win32":
         return "NonExistent"
-    p = _run([str(_host()), "status"], check=False)
-    return (p.stdout.strip().splitlines() or ["NonExistent"])[-1].strip()
+    p = _run(["sc.exe", "query", SERVICE_ID], check=False)
+    return parse_sc_query(p.returncode, p.stdout + p.stderr)
 
 
 def _set_account(account: str, password: str):
@@ -236,6 +248,10 @@ def install(opts: ServiceOptions, password: str = "", admins: list[str] | None =
     if status() != "NonExistent":
         say("Removing the existing service first.")
         uninstall(say=lambda _: None, keep_firewall=True)
+        for _ in range(30):   # a deleted service lingers until Windows lets go of it
+            if status() == "NonExistent":
+                break
+            time.sleep(1)
     for sub in ("", "logs", "work"):
         (data / sub).mkdir(parents=True, exist_ok=True)
     seed_settings(data, admins, say)
@@ -261,12 +277,17 @@ def install(opts: ServiceOptions, password: str = "", admins: list[str] | None =
 
 def uninstall(say: Callable[[str], None] = print, keep_firewall: bool = False) -> None:
     _require_windows_admin()
-    exe = _host()
     if status() == "NonExistent":
         say("The service is not installed.")
     else:
-        _run([str(exe), "stop"], check=False)
-        _run([str(exe), "uninstall"])
+        # sc.exe, not the service host: the host can't act without its configuration file, which an
+        # upgrade or a hand-deleted file may have removed.
+        _run(["sc.exe", "stop", SERVICE_ID], check=False)
+        for _ in range(30):
+            if status() != "Started":
+                break
+            time.sleep(1)
+        _run(["sc.exe", "delete", SERVICE_ID])
         say(f"Removed the {DISPLAY_NAME} service. Its settings and logs stay in {data_dir()}.")
     if not keep_firewall:
         for cmd in firewall_commands(0, add=False):
