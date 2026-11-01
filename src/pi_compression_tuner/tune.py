@@ -110,6 +110,11 @@ class TuneResult:
     suggested: PointConfig | None = None
 
     @property
+    def in_sheet(self) -> bool:
+        """Whether the point gets a PI Builder row: a scored change or an unscored suggestion."""
+        return self.changes or self.suggested is not None
+
+    @property
     def changes(self) -> bool:
         if self.recommended is None or self.current is None:
             return False

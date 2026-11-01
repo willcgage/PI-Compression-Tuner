@@ -50,7 +50,8 @@ def results_frame(results: list[TuneResult]) -> pd.DataFrame:
         row.update({"TemplateExcDev": b.excdev if b else None, "TemplateCompDev": b.compdev if b else None,
                     "TemplateCompMax": b.compmax if b else None, "TemplateExcMax": b.excmax if b else None})
         sg = r.suggested
-        row.update({"SuggestedExcDev": sg.excdev if sg else None, "SuggestedCompDev": sg.compdev if sg else None})
+        tried = sg is not None and cur is not None and sg.excdev != cur.config.excdev  # ExcDev too wide
+        row.update({"SuggestedExcDev": sg.excdev if tried else None, "SuggestedCompDev": sg.compdev if tried else None})
         shown = rec.config if (rec and r.changes) else sg
         row.update({"ProposedZero": shown.zero if shown else None, "ProposedSpan": shown.span if shown else None})
         row["Notes"] = " ".join(r.notes)

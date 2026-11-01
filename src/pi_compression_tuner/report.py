@@ -270,7 +270,7 @@ def _point_section(r: TuneResult, s: Series, opts: TuneOptions, selected: bool) 
     days = max(s.duration, 1) / 86400 if len(s) else 0
     prop = present.proposal(r)
     sheet = ""
-    if r.changes:
+    if r.in_sheet:
         sheet = ('<span class="sheet">PI Builder sheet: <b>selected</b></span>' if selected
                  else '<span class="sheet">PI Builder sheet: listed, not selected</span>')
     head = (f'<div class="phead"><h2>{html.escape(r.tag)}</h2><span class="chip {vc}"><i></i>{r.classification.value}</span>'
@@ -378,7 +378,7 @@ def write_report(results: list[TuneResult], series: dict[str, Series], opts: Tun
                if opts.input_mode == "raw" else "")
             + f'<td>{_arrow(f"{cur.score.retention:.1%}", f"{prop.score.retention:.1%}" if prop else None) if cur else "–"}</td>'
             f'<td>{_arrow(present.fmt_count(cur.events_per_day), present.fmt_count(prop.events_per_day) if prop else None) if cur else "–"}</td>'
-            f'<td>{ch}</td><td>{"x" if r.tag in selected and r.changes else ""}</td></tr>')
+            f'<td>{ch}</td><td>{"x" if r.tag in selected and r.in_sheet else ""}</td></tr>')
     exc_head = "<th>ExcDev</th>" if opts.input_mode == "raw" else ""
     table = ('<div class="wrap"><table class="list"><thead><tr><th>Point</th><th>Verdict</th><th>CompDev</th>'
              f'{exc_head}<th>Retention</th><th>Events / day</th><th>Volume change</th><th>Selected</th></tr></thead>'

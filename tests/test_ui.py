@@ -271,3 +271,20 @@ def test_alarm_limits_feed_suggest():
     series = at.session_state.series["DEMO.TEMP.PV"]
     crossings = alarm_crossings(series, (54.0, 66.0), estimate_noise(series.v))
     assert len(crossings) and set(crossings.tolist()) <= set(picked.value)
+
+
+def test_select_and_clear_all_shown_points():
+    at = _loaded_and_run()
+
+    def selected():
+        kpis = " ".join(m.value for m in at.markdown if "marked x for publishing" in m.value)
+        import re
+        return int(re.search(r"Selected</div><div[^>]*>(\d+)", kpis).group(1))
+
+    n = selected()
+    assert n > 0
+    at.button(key="sel_none").click().run()
+    assert not at.exception, at.exception
+    assert selected() == 0
+    at.button(key="sel_all").click().run()
+    assert selected() >= n
