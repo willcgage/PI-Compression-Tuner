@@ -24,7 +24,8 @@ This is the MVP: it **only makes recommendations**. Use it from the web UI (`pic
 | Losing detail | Current settings miss the target retention or the error limit | yes |
 | On target | Within target; no change | n/a |
 | Little to gain | No setting reaches the target, or reaching it keeps over half the events | no, review |
-| Range mismatch | Span is zero or negative, or more than 1% of values fall outside Zero and Span | no, review |
+| ExcDev too wide | Snapshot input: no CompDev reaches the target and ExcDev is wider than the noise, so the interface drops the movement first. Suggests a narrower ExcDev (about the noise, or 1% of the observed range) with CompDev at twice that, to run for a day before recording and tuning again | no, review |
+| Range mismatch | Span is zero or negative, or more than 1% of values fall outside Zero and Span. Proposes a round Zero and Span that hold every observed value (Zero stays 0 for signals that never go negative); check it against the instrument's calibrated range | no, review |
 | Not moving | The value never changes | no, review |
 | Too few events | Fewer than 50 events | no |
 
@@ -195,7 +196,7 @@ pict analyze capture/data.csv --config capture/config.csv --mode snapshot --serv
 
 - `report.html`: a summary, a table of every point linked to its own page, and one page per point in the same layout as the UI's Point detail tab: the finding, now-versus-proposed cards, the trend with a detail-lost strip and a zoom on the largest miss, the settings sheet and the signal profile. It works offline, follows the system's dark mode, and prints one point per page.
 - `results.csv`: current versus proposed settings, retention, maximum and RMS error, events per day, compression ratio, spike count, key moments missed, the CompDev implied by the key moments, and notes.
-- `pibuilder.csv`: one row per changed point, in PI Builder format. Rows that are ready to export are pre-selected with `x`. Review it in Excel, then publish with PI Builder.
+- `pibuilder.csv`: one row per changed point, in PI Builder format. Rows that are ready to export are pre-selected with `x`. Review it in Excel, then publish with PI Builder. Points flagged ExcDev too wide or Range mismatch are listed with their suggested ExcDev or Zero/Span, unselected. When any row changes Zero or Span, the deviations are written as CompDevPercent/ExcDevPercent of the new span, which PI keeps when Span changes, so the column order PI Builder applies does not matter.
 
 ## Input formats
 

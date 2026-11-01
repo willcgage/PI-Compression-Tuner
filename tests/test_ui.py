@@ -336,3 +336,19 @@ def test_admin_save_is_refused_when_someone_else_saved_first(monkeypatch):
     assert load_app_settings().max_results == 777
     at.button(key="admin_reload").click().run()
     assert at.number_input(key="admin_max_results").value == 777
+
+def test_select_and_clear_all_shown_points():
+    at = _loaded_and_run()
+
+    def selected():
+        kpis = " ".join(m.value for m in at.markdown if "marked x for publishing" in m.value)
+        import re
+        return int(re.search(r"Selected</div><div[^>]*>(\d+)", kpis).group(1))
+
+    n = selected()
+    assert n > 0
+    at.button(key="sel_none").click().run()
+    assert not at.exception, at.exception
+    assert selected() == 0
+    at.button(key="sel_all").click().run()
+    assert selected() >= n

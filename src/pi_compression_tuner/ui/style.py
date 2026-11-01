@@ -17,6 +17,7 @@ INK = {
 VERDICT_COLOR = {
     Classification.ON_TARGET: "#2f7a3c", Classification.STORING_NOISE: "#b8661f",
     Classification.LOSING_DETAIL: "#c0392b", Classification.LITTLE_TO_GAIN: "#4b5d9a",
+    Classification.EXCDEV_TOO_WIDE: "#c0392b",
     Classification.RANGE_MISMATCH: "#4b5d9a", Classification.NOT_MOVING: "#7b8790",
     Classification.TOO_FEW_EVENTS: "#7b8790",
 }

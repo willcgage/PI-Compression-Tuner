@@ -378,7 +378,12 @@ run_opts: TuneOptions = ss.get("opts", opts)
 def effective(r):
     """The result with an adopted probe setting in place of the proposal."""
     a = ss.adopted.get(r.tag)
-    return dataclasses.replace(r, recommended=a, notes=r.notes + ["CompDev adopted from the probe."]) if a else r
+    if not a:
+        return r
+    if r.recommended is not None:  # keep any Zero/Span fix the proposal carries
+        a = dataclasses.replace(a, config=dataclasses.replace(a.config, zero=r.recommended.config.zero,
+                                                              span=r.recommended.config.span))
+    return dataclasses.replace(r, recommended=a, notes=r.notes + ["CompDev adopted from the probe."])
 
 
 results = [effective(r) for r in ss.results]
@@ -459,11 +464,30 @@ with tab_overview:
     for c in ("CurrentEventsPerDay", "RecommendedEventsPerDay"):
         df[c] = df[c].round()
     view = df[df["Classification"].isin(shown)]
+    sheet_tags = [t for t in view["Tag"] if by_tag[t].in_sheet]
+
+    def _pick_all(tags, on):
+        ss.export_choice.update({t: on for t in tags})
+        ss.table_v += 1
+
+    b1, b2, b3 = st.columns([2, 2, 5], vertical_alignment="center")
+    b1.button(f"Select all shown ({len(sheet_tags)})", key="sel_all", on_click=_pick_all, args=(sheet_tags, True),
+              disabled=not sheet_tags, use_container_width=True)
+    b2.button("Clear all shown", key="sel_none", on_click=_pick_all, args=(sheet_tags, False),
+              disabled=not sheet_tags, use_container_width=True)
+    b3.markdown('<p class="pct-note">Filter by verdict above to select a whole group, then untick single rows. '
+                "Only points with a proposed change or suggestion go in the sheet.</p>", unsafe_allow_html=True)
     cols = ["Export", "Tag", "Classification", "Template", "CurrentCompDev", "RecommendedCompDev", "RecommendedExcDev",
+            "SuggestedExcDev", "SuggestedCompDev", "ProposedSpan",
             "CurrentRetention", "RecommendedRetention", "CurrentEventsPerDay", "RecommendedEventsPerDay",
             "EventChangePercent"]
     if run_opts.input_mode != "raw":
         cols.remove("RecommendedExcDev")
+    # Show the suggestion and Span columns only when some row has one, and Span only where it changes.
+    cur_span = {r.tag: r.current.config.span for r in results if r.current}
+    view = view.assign(ProposedSpan=[v if v == v and v != cur_span.get(t) else None
+                                     for t, v in zip(view["Tag"], view["ProposedSpan"])])
+    cols = [c for c in cols if not (c.startswith(("Suggested", "Proposed")) and view[c].isna().all())]
     edited = st.data_editor(
         view[cols], hide_index=True, use_container_width=True, key=f"table_{ss.table_v}",
         disabled=[c for c in cols if c != "Export"],
@@ -481,6 +505,11 @@ with tab_overview:
             "CurrentEventsPerDay": st.column_config.NumberColumn("Events/day", format="localized", width="small"),
             "RecommendedEventsPerDay": st.column_config.NumberColumn("→ proposed", format="localized", width="small"),
             "EventChangePercent": st.column_config.NumberColumn("Volume change", format="%+.1f%%", width="small"),
+            "SuggestedExcDev": st.column_config.NumberColumn("Try ExcDev", format="%.4g", width="small",
+                                                             help="ExcDev too wide: a narrower ExcDev to trial for a day."),
+            "SuggestedCompDev": st.column_config.NumberColumn("Try CompDev", format="%.4g", width="small"),
+            "ProposedSpan": st.column_config.NumberColumn("New Span", format="%.6g", width="small",
+                                                          help="Range mismatch: proposed Span (see Point detail for Zero)."),
         },
     )
     ss.export_choice.update(dict(zip(edited["Tag"], edited["Export"])))
@@ -512,7 +541,7 @@ with tab_point:
     h1, h2 = st.columns([5, 2], vertical_alignment="center")
     h1.markdown(f'<div class="pct-point"><h3>{style.esc(tag)}</h3>{style.chip(r.classification)}'
                 f'<span class="meta">{len(s):,} input events over {days:.1f} days</span></div>', unsafe_allow_html=True)
-    if r.changes:
+    if r.in_sheet:
         default_on = ss.export_choice.get(tag, r.ready_to_export or adopted)
 
         def _toggle(t=tag):
@@ -533,8 +562,9 @@ with tab_point:
     a1, a2 = st.columns([3, 2], gap="large")
     with a1:
         st.markdown(style.section("Settings"), unsafe_allow_html=True)
-        st.markdown(style.attrs_table(present.attr_rows(cfg_now, prop.config if prop else None),
-                                      proposed=prop is not None), unsafe_allow_html=True)
+        shown = present.shown_config(r)
+        st.markdown(style.attrs_table(present.attr_rows(cfg_now, shown), proposed=shown is not None),
+                    unsafe_allow_html=True)
     with a2:
         st.markdown(style.section("Signal"), unsafe_allow_html=True)
         items = present.signal_profile(r, s, cfg_now)
@@ -788,7 +818,7 @@ with tab_point:
 
 with tab_export:
     selected = {t for t, on in ss.export_choice.items() if on} | {
-        r.tag for r in results if r.tag not in ss.export_choice and r.changes and (r.ready_to_export or r.tag in ss.adopted)}
+        r.tag for r in results if r.tag not in ss.export_choice and r.in_sheet and (r.ready_to_export or r.tag in ss.adopted)}
     left, right = st.columns([5, 12], gap="large")
     with left:
         server_name = st.text_input("Data Archive (PI Builder Parent column)",
