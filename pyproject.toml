@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pi-compression-tuner"
-version = "0.1.0"
+version = "0.2.0"
 description = "Recommend exception and compression settings for PI Points from observed signal behavior."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -9,6 +9,18 @@ The tuner only READS from PI. It never writes values or point settings. Proposed
 changes come out as a PI Builder sheet that you review and publish yourself.
 
 
+New in 0.2.0
+------------
+- Range mismatch now proposes a round Zero/Span that holds every observed value,
+  and the PI Builder sheet writes the percent columns against the new span.
+- New verdict "ExcDev too wide": when ExcDev is wider than the signal's noise, the
+  tuner suggests a smaller ExcDev to run for a day before recording again.
+- pict pi record over the AF SDK no longer stops on points that lack an attribute
+  (such as instrumenttag).
+- Bulk select in the UI's point table.
+- Optional shared server with Windows sign-in, as a Windows service (section 6).
+
+
 Requirements
 ------------
 - Windows 10, Windows 11, or Windows Server 2016 or later, 64-bit.
@@ -119,7 +131,7 @@ and are signed in with their Windows account.
   domain account DOMAIN\COMPUTER$, unless you chose another). Give it a read-only
   PI mapping.
 - Settings, the activity log and service logs: C:\ProgramData\PI Compression Tuner
-- More detail, including HTTPS and Kerberos: docs\multi-user.md in the repository.
+- More detail, including HTTPS and Kerberos: docs\multi-user.md in this folder.
 
 
 What to send back
