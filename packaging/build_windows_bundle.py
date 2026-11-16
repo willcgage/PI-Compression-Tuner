@@ -116,6 +116,10 @@ def main() -> None:
         newline = "\r\n" if f.suffix in (".cmd", ".txt") else "\n"
         (bundle / f.name).write_bytes(text.replace("\n", newline).encode("utf-8"))
     shutil.copy(lock, bundle / "python" / "requirements-win64.txt")
+    # The shared-server guide, so it is at hand on a machine with no internet access.
+    (bundle / "docs").mkdir()
+    text = (ROOT / "docs" / "multi-user.md").read_text(encoding="utf-8").replace("\r\n", "\n")
+    (bundle / "docs" / "multi-user.md").write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
 
     # Build stamp and a manifest of every file, so the self-test can tell a complete,
     # current install from a partial extract or a copy mixed with an older bundle.

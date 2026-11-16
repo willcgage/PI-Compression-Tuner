@@ -1,7 +1,7 @@
 ; Windows installer for the PI Compression Tuner (Inno Setup 6).
 ;
 ; Built by .github/workflows/windows-bundle.yml from the unpacked offline bundle:
-;   iscc /DAppVersion=0.1.0 /DSourceDir=C:\path\to\PI-Compression-Tuner-0.1.0-win64 /DOutputDir=dist packaging\installer\pict.iss
+;   iscc /DAppVersion=0.2.0 /DSourceDir=C:\path\to\PI-Compression-Tuner-0.2.0-win64 /DOutputDir=dist packaging\installer\pict.iss
 ;
 ; It installs the bundle under Program Files with Start menu shortcuts. One optional task sets the tuner up
 ; as a Windows service that several people use from their browsers with Windows sign-in (`pict service install`).
